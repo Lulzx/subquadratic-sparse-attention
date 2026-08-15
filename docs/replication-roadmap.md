@@ -30,7 +30,7 @@ That is an audit result, not 67 replicated model claims.
 
 | # | Public claim family | Status | Evidence or missing work |
 |---:|---|---|---|
-| 1 | Arbitrary-position content-dependent sparse retrieval | Partial | Across three seeds, LFM2.5 router supervision preserves 27/27 exact and 24/24 dense-pass lexical-mismatch cases through 1,024 tokens, but only 6/27 long variable-value cases. Public benchmarks remain. |
+| 1 | Arbitrary-position content-dependent sparse retrieval | Partial | Across three token-router seeds, LFM2.5 preserves 27/27 exact and 24/24 dense-pass lexical-mismatch cases through 1,024 tokens, but only 6/27 long values. A seed-0 block index improves long values from 2/9 to 4/9 at fixed K=64; replication and public benchmarks remain. |
 | 2 | End-to-end linear selection and attention | Partial | Attention reads fixed `K=32`; portable bucket construction still sorts in `O(n log n)`. |
 | 3 | Linear memory scaling | Partial | Selected attention has bounded reads and measured memory through 16K, not millions of tokens. |
 | 4 | Full-context training and ordinary autoregressive operation | Partial | Parallel causal prefill works; a persistent incremental decode cache is absent. |

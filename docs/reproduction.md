@@ -271,6 +271,34 @@ Rerun the behavior command with the retrieval-router checkpoint template, then r
 the 65,536-token quality gate. The trainer streams hidden states rather than caching
 them; the reference seed-0 run peaks at 1.24 GB MLX memory.
 
+For the experimental completed-block path, train a four-token block router with one
+block per table, then run retrieval SFT and evaluate with two blocks per table:
+
+```bash
+python3 mlx_lfm_retrieval_router.py \
+  --checkpoint-template \
+    'runs/lfm2.5-layer{layer}-retrieval-router-12-14-seed{seed}.safetensors' \
+  --output-template \
+    'runs/lfm2.5-layer{layer}-block4-router-12-14-seed{seed}.safetensors' \
+  --block-size 4 --members 1 --steps 300 --seed 0
+
+python3 mlx_lfm_retrieval_recovery.py \
+  --checkpoint-template \
+    'runs/lfm2.5-layer{layer}-block4-router-12-14-seed{seed}.safetensors' \
+  --output-template \
+    'runs/lfm2.5-layer{layer}-block4-retrieval-sft-12-14-seed{seed}.safetensors' \
+  --objective lm --variable-values 32 --span-size 1 --block-size 4 \
+  --members 1 --steps 300 --seed 0
+
+python3 mlx_lfm_behavior_eval.py \
+  --checkpoint-template \
+    'runs/lfm2.5-layer{layer}-block4-retrieval-sft-12-14-seed{seed}.safetensors' \
+  --block-size 4 --members 2 --max-new-tokens 16 --seed 0
+```
+
+The router is trained at one block per table (`K=32`) while evaluation reads two
+(`K=64`). Report both the block budget and the expanded token budget.
+
 ### Historical SmolLM2 baseline
 
 The first natural-language routing experiment downloads the approximately 257 MB BF16

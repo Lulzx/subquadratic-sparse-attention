@@ -2,6 +2,7 @@
 
 import argparse
 import json
+import math
 import pathlib
 import time
 
@@ -94,18 +95,21 @@ def hard_source_recall(
         tokens = mx.array([prefix_ids], dtype=mx.int32)
         x_np = captured_input(model, tokens, replacement)
         x = mx.array(x_np)
-        selected = select_indices_qk(
-            x,
-            x,
-            replacement.router.query_projection,
-            replacement.router.key_projection,
-            tables=replacement.router.tables,
-            bits=replacement.router.bits,
-            members=members,
-            probes=probes,
-            block=False,
-            min_distance=window,
-        )
+        if replacement.block_size:
+            selected = replacement.candidate_indices(x)
+        else:
+            selected = select_indices_qk(
+                x,
+                x,
+                replacement.router.query_projection,
+                replacement.router.key_projection,
+                tables=replacement.router.tables,
+                bits=replacement.router.bits,
+                members=members,
+                probes=probes,
+                block=False,
+                min_distance=window,
+            )
         mx.eval(selected)
         indices = np.array(selected[0, query_position])
         recalled.append(source_position in indices)
@@ -117,6 +121,63 @@ def hard_source_recall(
         "examples": len(recalled),
         "mean_unique_candidates": float(np.mean(candidate_counts)),
     }
+
+
+def block_router_loss(router, x, source_position, query_position, args):
+    padding = (-x.shape[1]) % args.block_size
+    padded = mx.pad(x, ((0, 0), (0, padding), (0, 0)))
+    block_count = padded.shape[1] // args.block_size
+    blocks = padded.reshape(1, block_count, args.block_size, -1)
+    if padding:
+        counts = mx.full((block_count,), args.block_size, dtype=x.dtype)
+        counts = counts.at[-1].add(-padding)
+        block_key = mx.sum(blocks, axis=2) / counts.reshape(1, -1, 1)
+    else:
+        block_key = mx.mean(blocks, axis=2)
+    query_logits = (x[:, query_position:query_position + 1] @ router.query_projection)
+    query_logits = query_logits.reshape(1, 1, router.tables, router.bits)
+    key_logits = (block_key @ router.key_projection).reshape(
+        1, block_count, router.tables, router.bits
+    )
+    query_code = router.straight_through_sign(query_logits)
+    key_code = router.straight_through_sign(key_logits)
+    scores_by_table = mx.einsum("bqtd,bktd->bqkt", query_code, key_code)
+    scores = mx.max(scores_by_table, axis=-1) / math.sqrt(router.bits)
+    block_end = mx.minimum(
+        (mx.arange(block_count) + 1) * args.block_size, x.shape[1]
+    ) - 1
+    eligible = (block_end < query_position - args.window) & (
+        mx.arange(block_count) * args.block_size >= args.sink_tokens
+    )
+    scores = mx.where(eligible.reshape(1, 1, -1), scores, -1e9)
+    target_block = source_position // args.block_size
+    log_probability = scores - mx.logsumexp(scores, axis=-1, keepdims=True)
+    cross_entropy = -mx.mean(log_probability[..., target_block])
+
+    query_probability = mx.sigmoid(query_logits)
+    key_probability = mx.sigmoid(key_logits[:, target_block:target_block + 1])
+    same_bit = (
+        query_probability * key_probability
+        + (1.0 - query_probability) * (1.0 - key_probability)
+    )
+    log_table_match = mx.sum(
+        mx.log(mx.maximum(same_bit, mx.array(1e-6))), axis=-1
+    )
+    alignment = -mx.mean(mx.max(log_table_match, axis=-1))
+    probabilities = [mx.sigmoid(query_logits), mx.sigmoid(key_logits)]
+    balance = mx.mean(mx.stack([
+        mx.mean(mx.square(mx.mean(probability, axis=(0, 1)) - 0.5))
+        for probability in probabilities
+    ]))
+    confidence = mx.mean(mx.stack([
+        mx.mean(probability * (1.0 - probability))
+        for probability in probabilities
+    ]))
+    total = (
+        cross_entropy + args.alignment_weight * alignment
+        + args.balance_weight * balance + 0.01 * confidence
+    )
+    return total, (cross_entropy, alignment, balance, confidence)
 
 
 def train_router(model, replacement, targets, args, layer):
@@ -136,7 +197,15 @@ def train_router(model, replacement, targets, args, layer):
         )
         return loss, parts
 
-    loss_and_grad = nn.value_and_grad(router, loss_fn)
+    if args.block_size:
+        loss_and_grad = nn.value_and_grad(
+            router,
+            lambda current_router, x, source, query: block_router_loss(
+                current_router, x, source, query, args
+            ),
+        )
+    else:
+        loss_and_grad = nn.value_and_grad(router, loss_fn)
     started = time.perf_counter()
     for step in range(1, args.steps + 1):
         prefix_ids, source_position, query_position, _ = targets[
@@ -145,9 +214,17 @@ def train_router(model, replacement, targets, args, layer):
         tokens = mx.array([prefix_ids], dtype=mx.int32)
         x_np = captured_input(model, tokens, replacement)
         x = mx.array(x_np)
-        teacher = mx.zeros((1, 1, x.shape[1]), dtype=mx.float32)
-        teacher = teacher.at[0, 0, source_position].add(1.0)
-        (loss, parts), gradients = loss_and_grad(router, x, teacher, query_position)
+        if args.block_size:
+            (loss, parts), gradients = loss_and_grad(
+                router, x, source_position, query_position
+            )
+            teacher = None
+        else:
+            teacher = mx.zeros((1, 1, x.shape[1]), dtype=mx.float32)
+            teacher = teacher.at[0, 0, source_position].add(1.0)
+            (loss, parts), gradients = loss_and_grad(
+                router, x, teacher, query_position
+            )
         optimizer.update(router, gradients)
         mx.eval(router.parameters(), optimizer.state, loss, parts)
         if step == 1 or step % args.log_every == 0 or step == args.steps:
@@ -186,6 +263,7 @@ def main():
     parser.add_argument("--bits", type=int, default=8)
     parser.add_argument("--members", type=int, default=4)
     parser.add_argument("--probes", type=int, default=1)
+    parser.add_argument("--block-size", type=int, default=0)
     parser.add_argument("--steps", type=int, default=500)
     parser.add_argument("--lr", type=float, default=3e-4)
     parser.add_argument("--alignment-weight", type=float, default=0.1)
@@ -224,10 +302,18 @@ def main():
             ], axis=1)
             expanded.freeze()
             replacement.router = expanded
+    for replacement in replacements.values():
+        replacement.block_size = args.block_size
     set_sparse(replacements, True)
     targets, base_cases, skipped_local = training_targets(
         tokenizer, lengths, positions, args.window
     )
+    if args.block_size:
+        targets = [
+            target for target in targets
+            if ((target[1] // args.block_size + 1) * args.block_size - 1)
+            < target[2] - args.window
+        ]
 
     results = {}
     for layer, replacement in replacements.items():

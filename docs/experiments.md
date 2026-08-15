@@ -466,3 +466,22 @@ top-8, 100-step version peaks at 1.49 GB but does not improve the held-out resul
 These controls point away from further token-level tuning and toward a learned block or
 span index whose routed unit preserves a complete value, followed by exact token
 attention inside the retrieved block.
+
+### Completed-block index: seed-0 milestone
+
+The first block implementation groups four consecutive hidden states, hashes their
+mean, and exposes a block only after its final token is outside the 32-token local
+window. The router is supervised against the block containing the required source
+token. A streamed retrieval-SFT stage then updates only the sparse Q/K/V/O copies on
+32 diverse long values. No hidden-state corpus is cached.
+
+With two blocks per table, the distant budget is fixed at `8 × 2 × 4 = 64` tokens.
+On seed 0 it preserves 21/26 dense-pass cases: 9/9 exact, 8/8 lexical mismatch, and
+4/9 long variable values. The token router at `K=32` preserves 19/26 and 2/9 long
+values on the same seed. Thus the block path doubles the difficult category without
+regressing the established short categories, but it does not yet pass the gate.
+
+The full paired quality ratios are 0.9326 on WikiText (95% CI 0.9104–0.9550) and
+0.8505 on PG-19 (0.8261–0.8764), over 65,536 tokens per corpus. Block-router training
+peaks at 1.24 GB, retrieval SFT at 1.44 GB, the quality audit at 1.46 GB, and the full
+1,024-token behavior matrix at 1.64 GB. This is a seed-0 result awaiting replication.

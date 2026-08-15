@@ -74,6 +74,7 @@ def main():
     parser.add_argument("--members", type=int, default=4)
     parser.add_argument("--probes", type=int, default=1)
     parser.add_argument("--span-size", type=int, default=4)
+    parser.add_argument("--block-size", type=int, default=0)
     parser.add_argument("--teacher-topk", type=int, default=8)
     parser.add_argument("--objective", choices=["kl", "lm"], default="kl")
     parser.add_argument("--variable-values", type=int, default=0)

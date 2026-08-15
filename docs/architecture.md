@@ -57,6 +57,25 @@ successor position min(p + 1, current position)
 
 The causal restriction ensures the successor never lies in the future. This two-token block read was the critical change that made the selector compatible with induction-style key/value retrieval.
 
+## Completed-block index
+
+The LFM2.5 path also implements a true block-index variant. It averages the hidden
+states in each fixed-width block, hashes that summary, retrieves a bounded number of
+block anchors, and runs exact token attention inside the selected blocks. A block is
+searchable only when its final token is strictly before the query's distant-window
+cutoff. Computing summaries for later blocks therefore cannot affect an earlier query.
+
+The current seed-0 experiment uses eight tables, one probe, two blocks per table, and
+four tokens per block:
+
+```text
+K = 8 tables × 1 probe × 2 blocks × 4 tokens = 64 distant tokens
+```
+
+The portable implementation still sorts bucket entries, and mean pooling is only a
+first block-summary baseline. The test suite mutates future blocks and verifies exact
+invariance of all earlier selections.
+
 ## Causal prefill
 
 The portable implementation flattens `(batch, token, table, probe)` assignments, sorts them by global bucket identifier, and uses the inverse permutation to locate each token inside each bucket. The `m` immediately preceding entries in the sorted bucket are prior causal members.

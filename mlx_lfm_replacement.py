@@ -27,7 +27,7 @@ from mlx_donor_router import (
     parse_paths,
     token_segments,
 )
-from ssa.mlx_selector import select_indices_qk
+from ssa.mlx_selector import select_block_indices_qk, select_indices_qk
 
 
 class GatedLFMReplacement(nn.Module):
@@ -45,6 +45,7 @@ class GatedLFMReplacement(nn.Module):
         self.probes = probes
         self.block_expansion = block_expansion
         self.span_size = 2 if block_expansion else 1
+        self.block_size = 0
         self.replacement_alpha = replacement_alpha
         self.dense_attention.freeze()
         self.router.freeze()
@@ -52,14 +53,48 @@ class GatedLFMReplacement(nn.Module):
 
     def candidate_indices(self, x):
         batch, length, _ = x.shape
-        distant = select_indices_qk(
-            mx.stop_gradient(x), mx.stop_gradient(x),
-            mx.stop_gradient(self.router.query_projection),
-            mx.stop_gradient(self.router.key_projection),
-            tables=self.router.tables, bits=self.router.bits,
-            members=self.members, probes=self.probes, block=False,
-            min_distance=self.window,
-        )
+        if self.block_size:
+            padding = (-length) % self.block_size
+            padded = mx.pad(x, ((0, 0), (0, padding), (0, 0)))
+            block_count = padded.shape[1] // self.block_size
+            blocks = padded.reshape(batch, block_count, self.block_size, -1)
+            if padding:
+                counts = mx.full((block_count,), self.block_size, dtype=x.dtype)
+                counts = counts.at[-1].add(-padding)
+                block_key = mx.sum(blocks, axis=2) / counts.reshape(1, -1, 1)
+            else:
+                block_key = mx.mean(blocks, axis=2)
+            anchors = select_block_indices_qk(
+                mx.stop_gradient(x),
+                mx.stop_gradient(block_key),
+                mx.stop_gradient(self.router.query_projection),
+                mx.stop_gradient(self.router.key_projection),
+                block_size=self.block_size,
+                context_length=length,
+                tables=self.router.tables,
+                bits=self.router.bits,
+                members=self.members,
+                probes=self.probes,
+                min_distance=self.window,
+            )
+            offsets = mx.arange(self.block_size).reshape(1, 1, 1, -1)
+            distant = anchors[..., None] + offsets
+            query_positions = mx.arange(length).reshape(1, length, 1, 1)
+            valid_distant = (anchors[..., None] >= 0) & (distant < length) & (
+                distant < query_positions - self.window
+            )
+            distant = mx.where(valid_distant, distant, -1).reshape(
+                batch, length, -1
+            )
+        else:
+            distant = select_indices_qk(
+                mx.stop_gradient(x), mx.stop_gradient(x),
+                mx.stop_gradient(self.router.query_projection),
+                mx.stop_gradient(self.router.key_projection),
+                tables=self.router.tables, bits=self.router.bits,
+                members=self.members, probes=self.probes, block=False,
+                min_distance=self.window,
+            )
         if self.span_size > 1:
             offsets = mx.arange(self.span_size).reshape(1, 1, 1, self.span_size)
             distant = distant[..., None] + offsets

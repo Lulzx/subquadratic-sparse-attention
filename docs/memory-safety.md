@@ -43,6 +43,10 @@ retrieval-recovery tool therefore defaults to top 8, 100 steps, 256-token inputs
 64 MB cache. Larger settings require an explicit override and are not recommended on
 this laptop.
 
+The seed-0 block path peaks at 1.24 GB for router training, 1.44 GB for retrieval SFT,
+1.46 GB for the paired quality audit, and 1.64 GB for the full 1,024-token generation
+matrix. Replication runs remain sequential.
+
 ## Recommended long-context settings
 
 Use batch size 1 beyond 1K for end-to-end model evaluation:

@@ -12,7 +12,12 @@ from mlx_donor_router import DonorHashRouter
 from mlx_lfm_replacement import GatedLFMReplacement
 from ssa.mlx_attention import random_weights, sparse_attention, sparse_attention_chunked
 from ssa.mlx_model import MLXSSAAttention, causal_slot_attention
-from ssa.mlx_selector import probe_codes, select_indices, select_indices_qk
+from ssa.mlx_selector import (
+    probe_codes,
+    select_block_indices_qk,
+    select_indices,
+    select_indices_qk,
+)
 
 
 def numpy_rope(x, positions, base=50000.0):
@@ -158,6 +163,39 @@ def test_semantic_selector_parity_and_causality():
     print("PASS separate Q/K selector parity and causality")
 
 
+def test_block_selector_causality():
+    mx.random.seed(23)
+    x = mx.random.normal((1, 12, 8))
+    projection = mx.random.normal((8, 8))
+
+    def select(values):
+        blocks = mx.mean(values.reshape(1, 3, 4, 8), axis=2)
+        return select_block_indices_qk(
+            values,
+            blocks,
+            projection,
+            projection,
+            block_size=4,
+            context_length=12,
+            tables=2,
+            bits=4,
+            members=1,
+            probes=1,
+        )
+
+    before = select(x)
+    changed = mx.concatenate([x[:, :8], mx.random.normal((1, 4, 8))], axis=1)
+    after = select(changed)
+    mx.eval(before, after)
+    np.testing.assert_array_equal(np.array(before)[:, :8], np.array(after)[:, :8])
+    selected = np.array(before)[0]
+    for query_position, anchors in enumerate(selected):
+        valid = anchors[anchors >= 0]
+        assert np.all(valid % 4 == 0)
+        assert np.all(valid + 3 < query_position)
+    print("PASS completed-block selector causality")
+
+
 def test_causal_global_slots():
     rng = np.random.default_rng(13)
     q = rng.standard_normal((1, 24, 2, 4), dtype=np.float32)
@@ -264,6 +302,7 @@ if __name__ == "__main__":
     test_length_curriculum()
     test_multiprobe_causality()
     test_semantic_selector_parity_and_causality()
+    test_block_selector_causality()
     test_causal_global_slots()
     test_semantic_router_gradient()
     test_weight_resume()

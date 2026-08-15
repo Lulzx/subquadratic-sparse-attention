@@ -291,6 +291,7 @@ def main():
     parser.add_argument("--probes", type=int, default=1)
     parser.add_argument("--block-expansion", action="store_true")
     parser.add_argument("--span-size", type=int, default=1)
+    parser.add_argument("--block-size", type=int, default=0)
     parser.add_argument("--memory-limit-mb", type=int, default=1792)
     parser.add_argument("--cache-limit-mb", type=int, default=256)
     parser.add_argument("--seed", type=int, default=0)
@@ -313,6 +314,7 @@ def main():
     for replacement in replacements.values():
         replacement.block_expansion = args.block_expansion
         replacement.span_size = 2 if args.block_expansion else args.span_size
+        replacement.block_size = args.block_size
 
     instruction_results = []
     for case in INSTRUCTION_CASES:
