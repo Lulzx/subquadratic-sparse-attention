@@ -167,6 +167,7 @@ All benchmark commands have conservative default context limits. See [memory saf
 | [Model-card claim audit](docs/model-card-audit.md) | What the SubQ report's public arithmetic supports and what cannot be reproduced |
 | [Replication ledger and roadmap](docs/replication-roadmap.md) | Claim status, recent research, donor plan, and Mac-local milestones |
 | [Plain-language overview](docs/plain-language-overview.md) | What the project does, why it fits on a laptop, and what remains |
+| [Indexed-memory article analysis](docs/indexed-memory-article-analysis.md) | Mapping the selector/indexing thesis and DeepSeek comparison to this implementation |
 | [Reproduction guide](docs/reproduction.md) | Installation and every safe command |
 | [Memory safety](docs/memory-safety.md) | Guardrails added after an unsafe dense allocation |
 | [Design history](docs/design-history.md) | Failed fixed-bucket design and the LSH pivot |

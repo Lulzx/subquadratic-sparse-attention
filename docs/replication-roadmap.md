@@ -260,6 +260,11 @@ Replace sorting with append-only tables, implement persistent decoding, then fus
 gather/attention path in Metal. Only after correctness parity should the project compare
 against dense MLX attention at increasing lengths.
 
+The [indexed-memory article analysis](indexed-memory-article-analysis.md) adds two
+explicit gates before any end-to-end sub-quadratic claim: compare token routing with a
+fixed-budget block/span index, and report index build, lookup, exact attention, and
+full-model costs separately.
+
 ## Reporting rules
 
 Every result added to this repository must state:
