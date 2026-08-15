@@ -27,10 +27,16 @@ def window_attention(q, k, v, window):
 
 
 class MLXSSAAttention(nn.Module):
-    def __init__(self, width, heads, window=32, tables=4, bits=16, members=4):
+    def __init__(self, width, heads, window=32, tables=4, bits=16, members=4, probes=1):
         super().__init__()
         if width % heads:
             raise ValueError("width must be divisible by heads")
+        if tables < 1 or members < 1:
+            raise ValueError("tables and members must be positive")
+        if bits < 1 or bits > 30:
+            raise ValueError("bits must be between 1 and 30")
+        if probes < 1 or probes > bits + 1:
+            raise ValueError("probes must be between 1 and bits + 1")
         self.width = width
         self.heads = heads
         self.head_dim = width // heads
@@ -38,6 +44,7 @@ class MLXSSAAttention(nn.Module):
         self.tables = tables
         self.bits = bits
         self.members = members
+        self.probes = probes
         self.q_proj = nn.Linear(width, width, bias=False)
         self.k_proj = nn.Linear(width, width, bias=False)
         self.v_proj = nn.Linear(width, width, bias=False)
@@ -53,7 +60,7 @@ class MLXSSAAttention(nn.Module):
         v = self.v_proj(x).reshape(batch, length, self.heads, self.head_dim)
         selected = select_indices(
             mx.stop_gradient(x), mx.stop_gradient(self.hash_projection),
-            tables=self.tables, bits=self.bits, members=self.members,
+            tables=self.tables, bits=self.bits, members=self.members, probes=self.probes,
         )
         if inference_chunk is None:
             sparse = attend_selected(q, k, v, selected)
@@ -83,10 +90,10 @@ class MLXSSAAttention(nn.Module):
 
 
 class MLXBlock(nn.Module):
-    def __init__(self, width, heads, window, tables, bits, members):
+    def __init__(self, width, heads, window, tables, bits, members, probes):
         super().__init__()
         self.norm1 = nn.LayerNorm(width)
-        self.attention = MLXSSAAttention(width, heads, window, tables, bits, members)
+        self.attention = MLXSSAAttention(width, heads, window, tables, bits, members, probes)
         self.norm2 = nn.LayerNorm(width)
         self.up = nn.Linear(width, 4 * width)
         self.down = nn.Linear(4 * width, width)
@@ -98,10 +105,13 @@ class MLXBlock(nn.Module):
 
 class MLXTinyLM(nn.Module):
     def __init__(self, vocab=2048, width=64, layers=2, heads=4, window=32,
-                 tables=4, bits=16, members=4):
+                 tables=4, bits=16, members=4, probes=1):
         super().__init__()
         self.embedding = nn.Embedding(vocab, width)
-        self.blocks = [MLXBlock(width, heads, window, tables, bits, members) for _ in range(layers)]
+        self.blocks = [
+            MLXBlock(width, heads, window, tables, bits, members, probes)
+            for _ in range(layers)
+        ]
         self.norm = nn.LayerNorm(width)
         self.output = nn.Linear(width, vocab, bias=False)
 

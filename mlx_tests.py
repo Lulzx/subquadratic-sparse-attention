@@ -3,7 +3,9 @@ import math
 import mlx.core as mx
 import numpy as np
 
+from mlx_train import curriculum_length, scaled_batch_size
 from ssa.mlx_attention import random_weights, sparse_attention, sparse_attention_chunked
+from ssa.mlx_selector import probe_codes, select_indices
 
 
 def numpy_rope(x, positions, base=50000.0):
@@ -70,5 +72,47 @@ def test_reference():
     print("PASS chunked MLX attention, max error", chunk_error)
 
 
+def test_multiprobe_neighbor():
+    # Positions 0 and 2 differ only in the low-margin first hash bit.
+    x = mx.array([[[0.1, 1.0], [-2.0, -2.0], [-0.1, 1.0]]], dtype=mx.float32)
+    projection = mx.eye(2, dtype=mx.float32)
+    codes = probe_codes(x, projection, tables=1, bits=2, probes=2)
+    exact = select_indices(
+        x, projection, tables=1, bits=2, members=1, probes=1, block=False
+    )
+    multiprobe = select_indices(
+        x, projection, tables=1, bits=2, members=1, probes=2, block=False
+    )
+    mx.eval(codes, exact, multiprobe)
+    assert int(codes[0, 0, 0, 1]) == int(codes[0, 2, 0, 0])
+    assert not bool(mx.any(exact[0, 2] == 0))
+    assert bool(mx.any(multiprobe[0, 2] == 0))
+    assert not bool(mx.any(multiprobe[0, 0] > 0)), "future position leaked"
+    print("PASS multiprobe retrieves a Hamming-1 causal neighbor")
+
+
+def test_length_curriculum():
+    lengths = [128, 256, 512, 1024]
+    schedule = [curriculum_length(step, 8, lengths) for step in range(1, 9)]
+    assert schedule == [128, 128, 256, 256, 512, 512, 1024, 1024]
+    assert [scaled_batch_size(16, 128, length) for length in lengths] == [16, 8, 4, 2]
+    print("PASS staged length curriculum and constant-token batches")
+
+
+def test_multiprobe_causality():
+    rng = np.random.default_rng(7)
+    x_np = rng.standard_normal((1, 32, 8), dtype=np.float32)
+    projection = mx.array(rng.standard_normal((8, 12), dtype=np.float32))
+    before = select_indices(mx.array(x_np), projection, tables=3, bits=4, probes=3)
+    x_np[:, 20:] = rng.standard_normal((1, 12, 8), dtype=np.float32)
+    after = select_indices(mx.array(x_np), projection, tables=3, bits=4, probes=3)
+    mx.eval(before, after)
+    np.testing.assert_array_equal(np.array(before)[:, :20], np.array(after)[:, :20])
+    print("PASS multiprobe selector causality under future mutation")
+
+
 if __name__ == "__main__":
     test_reference()
+    test_multiprobe_neighbor()
+    test_length_curriculum()
+    test_multiprobe_causality()

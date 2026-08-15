@@ -33,6 +33,9 @@ Expected properties:
 python3 mlx_train.py \
   --steps 300 \
   --seq-len 128 \
+  --tables 4 \
+  --members 4 \
+  --probes 1 \
   --batch 16 \
   --width 64 \
   --layers 2 \
@@ -44,6 +47,25 @@ python3 mlx_train.py \
 The command writes weights and a matching JSON configuration under `runs/`. Generated runs are ignored by Git.
 
 The seeded reference run reached 100% current-batch accuracy by step 250 and 99.92% held-out accuracy after step 300. Exact timings and optimization trajectories can vary by hardware and MLX version.
+
+To reproduce the multiprobe curriculum checkpoint:
+
+```bash
+python3 mlx_train.py \
+  --steps 1200 \
+  --train-lengths 128,256,512,1024 \
+  --batch 16 \
+  --width 64 \
+  --layers 2 \
+  --heads 4 \
+  --window 32 \
+  --tables 8 \
+  --bits 16 \
+  --members 2 \
+  --probes 2 \
+  --seed 0 \
+  --output runs/mlx-ssa-multiprobe-curriculum.safetensors
+```
 
 ## Length extrapolation
 

@@ -17,7 +17,7 @@ Learned per-head gates mix the two outputs before the final projection.
 
 ## Multi-table SimHash selector
 
-For token state `x_t ∈ R^d`, a learned projection produces `T × b` real-valued hash logits. The current defaults are:
+For token state `x_t ∈ R^d`, a learned projection produces `T × b` real-valued hash logits. The measured baseline uses:
 
 - `T = 4` independent tables;
 - `b = 16` bits per table;
@@ -26,13 +26,17 @@ For token state `x_t ∈ R^d`, a learned projection produces `T × b` real-value
 
 Each table code is the sign pattern of 16 projected values. A query computes the same codes and directly looks up the corresponding causal buckets. There is no query-by-key scoring matrix in the selector.
 
+The selector optionally performs multiprobe lookup by assigning each token to its exact code and `p - 1` one-bit neighbors. Neighbor bits are chosen by the smallest absolute projection logits, which are the sign decisions closest to their boundaries. Multi-assignment lets every probe retain its own causal rank in the sorted index; no all-pairs probe scoring is introduced.
+
 The selected-token budget is therefore:
 
 ```text
-K = tables × members × block width
-  = 4 × 4 × 2
+K = tables × probes × members × block width
+  = 4 × 1 × 4 × 2
   = 32 tokens per query
 ```
+
+For example, the recommended collision experiment uses eight tables, two probes, two members, and block width two, giving `K = 64`.
 
 ## Why include the successor?
 
@@ -49,7 +53,7 @@ The causal restriction ensures the successor never lies in the future. This two-
 
 ## Causal prefill
 
-The portable implementation flattens `(batch, token, table)` assignments, sorts them by global bucket identifier, and uses the inverse permutation to locate each token inside each bucket. The `m` immediately preceding entries in the sorted bucket are prior causal members.
+The portable implementation flattens `(batch, token, table, probe)` assignments, sorts them by global bucket identifier, and uses the inverse permutation to locate each token inside each bucket. The `m` immediately preceding entries in the sorted bucket are prior causal members.
 
 No future content affects prior outputs. The test suite verifies this by mutating every token after a cutoff and comparing all earlier outputs.
 
@@ -57,11 +61,11 @@ No future content affects prior outputs. The test suite verifies this by mutatin
 
 The intended decode data structure is simpler than prefill:
 
-1. compute four hashes for the new token;
-2. read the four corresponding append-only bucket tails;
-3. gather at most 32 key/value positions;
+1. compute the configured table hashes and low-margin probes for the new token;
+2. read the corresponding append-only bucket tails;
+3. gather at most the configured `K` key/value positions;
 4. compute selected softmax attention;
-5. append the new position to its four buckets.
+5. append the new position to its configured exact and probe buckets.
 
 The current repository implements parallel prefill and causal semantics. It does not yet ship a persistent decode cache.
 
@@ -87,17 +91,17 @@ Q/K/V projections and all gathered values receive ordinary task gradients. A fut
 
 ## Complexity
 
-Let sequence length be `n`, model width `d`, tables `T`, bits `b`, selected tokens `K`, and local window `W`.
+Let sequence length be `n`, model width `d`, tables `T`, probes `p`, bits `b`, selected tokens `K`, and local window `W`.
 
 | Component | Logical implementation | Portable prototype |
 |---|---:|---:|
 | Hash projection | `O(n d T b)` | `O(n d T b)` |
-| Bucket construction | expected `O(n T)` | `O(n T log(nT))` sorting |
-| Candidate lookup | expected `O(n T m)` | `O(n T m)` after sorting |
+| Bucket construction | expected `O(n T p)` | `O(n T p log(nTp))` sorting |
+| Candidate lookup | expected `O(n T p m)` | `O(n T p m)` after sorting |
 | Selected attention | `O(n K d)` | `O(n K d)` |
 | Window attention | `O(n W d)` | `O(n W d)` |
 
-With fixed `T`, `b`, `m`, `K`, and `W`, the intended hash-table design is linear in `n`. The current cross-platform prefill selector is subquadratic but not strictly linear because it uses sorting.
+With fixed `T`, `p`, `b`, `m`, `K`, and `W`, the intended hash-table design is linear in `n`. The current cross-platform prefill selector is subquadratic but not strictly linear because it uses sorting.
 
 ## What is and is not being replicated
 

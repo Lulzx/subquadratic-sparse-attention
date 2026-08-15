@@ -24,7 +24,7 @@ The router currently receives balance and confidence losses. It is not trained t
 
 ### Collision frontier
 
-Accuracy falls from about 95% at 2K to 78% at 4K for the 128-token-trained model. The experiment does not isolate whether collisions, limited bucket tails, model capacity, position extrapolation, or curriculum is dominant.
+The 128-token baseline falls from about 95% at 2K to 78% at 4K. A joint eight-table, two-probe, multi-length configuration raises 4K accuracy to 95.67%, but falls to 75% at 16K in a smaller frontier check. Because selector capacity, read budget, training steps, and curriculum changed together, the experiment does not isolate the dominant cause.
 
 ### Tiny model
 
@@ -36,8 +36,8 @@ MLX standard operations are fast enough to validate the design, but hash, gather
 
 ## Highest-value next experiments
 
-1. **Collision ablation**: vary tables, bits, members, and multiprobe radius while holding `K` fixed.
-2. **Length curriculum**: train across 128–1,024 tokens and retest 4K–16K.
+1. **Run the collision ablation**: tables, bits, members, and lowest-margin multiprobe count are now configurable; compare them at fixed and increasing `K`.
+2. **Run the length curriculum**: staged 128–1,024-token training is now implemented; train full checkpoints and retest 4K–16K.
 3. **Semantic routing loss**: distill bucket agreement from fixed-window dense attention or labeled retrieval positions.
 4. **Custom Metal selector**: replace sorting with append-only bucket tails and benchmark true expected-linear prefill/decode behavior.
 5. **Persistent decode cache**: verify token-by-token outputs against parallel causal prefill.

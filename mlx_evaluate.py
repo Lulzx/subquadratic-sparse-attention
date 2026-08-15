@@ -25,6 +25,8 @@ def main():
         vocab=VOCAB,
         width=config["width"], layers=config["layers"], heads=config["heads"],
         window=config["window"],
+        tables=config.get("tables", 4), bits=config.get("bits", 16),
+        members=config.get("members", 4), probes=config.get("probes", 1),
     )
     model.load_weights(args.checkpoint)
     for length in map(int, args.lengths.split(",")):

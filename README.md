@@ -19,7 +19,7 @@ The original SSA mechanism is unpublished; this repository proposes and tests a 
 
 ## What works
 
-The current model combines causal sliding-window attention with content-addressed retrieval through four learned 16-bit SimHash tables. Each query reads a fixed 32-token budget, regardless of context length.
+The measured baseline combines causal sliding-window attention with content-addressed retrieval through four learned 16-bit SimHash tables. Each query reads a fixed 32-token budget, regardless of context length. The implementation also supports additional tables and lowest-margin multiprobe hashing for the next collision/curriculum experiments.
 
 | Result | Measurement |
 |---|---:|
@@ -31,6 +31,7 @@ The current model combines causal sliding-window attention with content-addresse
 | Numerical error against NumPy | **< 9 × 10⁻⁷** |
 | MQAR held-out accuracy at training length | **99.92%** |
 | MQAR accuracy at 16× training length | **95.22%** |
+| MQAR accuracy at the former 4K frontier | **95.67%** |
 
 The model was trained at 128 tokens and evaluated without further training:
 
@@ -42,6 +43,8 @@ The model was trained at 128 tokens and evaluated without further training:
 | 1,024 | 8× | 95.38% |
 | 2,048 | 16× | 95.22% |
 | 4,096 | 32× | 77.93% |
+
+A follow-up checkpoint trained with eight tables, two lowest-margin probes, two members, and a staged 128/256/512/1,024-token curriculum reaches **95.67% at 4,096 tokens** (10,960 / 11,456 held-out answers). This is a joint configuration result, not an ablation attributing the gain to any one change.
 
 > [!IMPORTANT]
 > These are synthetic multi-query associative-recall results from a tiny experimental model. They are not general language-model, RULER, GPQA, or production-serving results.
@@ -98,6 +101,25 @@ python3 mlx_evaluate.py \
   runs/mlx-ssa-128.safetensors \
   --lengths 128,256,512,1024,2048,4096
 ```
+
+Run the higher-capacity retrieval experiment with a staged length curriculum:
+
+```bash
+python3 mlx_train.py \
+  --steps 1200 \
+  --train-lengths 128,256,512,1024 \
+  --batch 16 \
+  --tables 8 \
+  --members 2 \
+  --probes 2 \
+  --output runs/mlx-ssa-multiprobe-curriculum.safetensors
+
+python3 mlx_evaluate.py \
+  runs/mlx-ssa-multiprobe-curriculum.safetensors \
+  --lengths 128,256,512,1024,2048,4096
+```
+
+This configuration reads at most 64 selected tokens per query. Training scales the batch inversely with context length to keep the approximate token count per optimizer step bounded.
 
 Benchmark the memory-bounded MLX paths:
 

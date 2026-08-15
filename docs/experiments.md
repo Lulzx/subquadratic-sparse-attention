@@ -86,6 +86,36 @@ The same checkpoint was evaluated without fine-tuning. The number of stored key/
 
 The clear result is strong extrapolation through 16× training length and material degradation at 32×. Likely contributors include hash collisions, finite per-bucket history, the tiny model's induction circuit, and training on a single context length.
 
+## Multiprobe curriculum follow-up
+
+A seeded follow-up run jointly changed selector capacity and training lengths:
+
+| Parameter | Value |
+|---|---:|
+| Seed | 0 |
+| Training steps | 1,200 |
+| Curriculum | 128, 256, 512, 1,024 tokens; 300 steps each |
+| Batch by stage | 16, 8, 4, 2 |
+| Width / layers / heads | 64 / 2 / 4 |
+| Tables / bits | 8 / 16 |
+| Probes / members / block width | 2 / 2 / 2 |
+| Selected budget | `K = 64` |
+
+The checkpoint reached 100% held-out accuracy at every curriculum length. A 16-batch, batch-4 extrapolation run produced:
+
+| Context | Correct / evaluated | Accuracy |
+|---:|---:|---:|
+| 128 | 320 / 320 | 100.00% |
+| 256 | 704 / 704 | 100.00% |
+| 512 | 1,408 / 1,408 | 100.00% |
+| 1,024 | 2,816 / 2,816 | 100.00% |
+| 2,048 | 5,690 / 5,696 | 99.89% |
+| 4,096 | 10,960 / 11,456 | 95.67% |
+
+This improves the documented 4K baseline from 77.93% to 95.67%, a gain of 17.74 percentage points. The experiment changes tables, probes, members, selected budget, step count, and curriculum together, so it does not identify which change caused the gain.
+
+A smaller batch-1, four-batch frontier check measured 96.09% at 8K (688 / 716) and 75.00% at 16K (537 / 716). MQAR caps stored pairs at 512, so beyond 4K these cases increase retrieval distance and filler rather than the number of associations.
+
 ## PyTorch reference results
 
 The initial PyTorch/MPS language-model curriculum did not learn general associative retrieval in the tested configurations, although it could overfit a fixed batch to 100%. This was useful evidence that optimization worked but the setup was not producing a general circuit.

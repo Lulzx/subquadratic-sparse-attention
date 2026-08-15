@@ -39,6 +39,7 @@ def main():
     parser.add_argument("--tables", type=int, default=4)
     parser.add_argument("--bits", type=int, default=16)
     parser.add_argument("--members", type=int, default=4)
+    parser.add_argument("--probes", type=int, default=1)
     parser.add_argument("--needles", type=int, default=100)
     parser.add_argument("--repeats", type=int, default=5)
     parser.add_argument("--seed", type=int, default=1)
@@ -57,6 +58,7 @@ def main():
         ms, selected = timed_selector(
             x, projection, args.repeats,
             tables=args.tables, bits=args.bits, members=args.members,
+            probes=args.probes,
         )
         selected_np = np.array(selected)[0, queries]
         hits = sum(

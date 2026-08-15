@@ -40,7 +40,7 @@ def attend_selected(q, k, v, selected, query_start=0, rope_base=50000.0):
 
 
 def sparse_attention(x, wq, wk, wv, wo, hash_projection, heads=4, tables=4, bits=16,
-                     members=4, rope_base=50000.0):
+                     members=4, probes=1, rope_base=50000.0):
     batch, length, width = x.shape
     if width % heads:
         raise ValueError("width must be divisible by heads")
@@ -48,13 +48,15 @@ def sparse_attention(x, wq, wk, wv, wo, hash_projection, heads=4, tables=4, bits
     q = (x @ wq).reshape(batch, length, heads, head_dim)
     k = (x @ wk).reshape(batch, length, heads, head_dim)
     v = (x @ wv).reshape(batch, length, heads, head_dim)
-    selected = select_indices(x, hash_projection, tables=tables, bits=bits, members=members)
+    selected = select_indices(
+        x, hash_projection, tables=tables, bits=bits, members=members, probes=probes
+    )
     output = attend_selected(q, k, v, selected, rope_base=rope_base)
     return output.reshape(batch, length, width) @ wo, selected
 
 
 def sparse_attention_chunked(x, wq, wk, wv, wo, hash_projection, heads=4, tables=4, bits=16,
-                             members=4, rope_base=50000.0, chunk_q=1024):
+                             members=4, probes=1, rope_base=50000.0, chunk_q=1024):
     batch, length, width = x.shape
     if width % heads:
         raise ValueError("width must be divisible by heads")
@@ -62,7 +64,9 @@ def sparse_attention_chunked(x, wq, wk, wv, wo, hash_projection, heads=4, tables
     q = (x @ wq).reshape(batch, length, heads, head_dim)
     k = (x @ wk).reshape(batch, length, heads, head_dim)
     v = (x @ wv).reshape(batch, length, heads, head_dim)
-    selected = select_indices(x, hash_projection, tables=tables, bits=bits, members=members)
+    selected = select_indices(
+        x, hash_projection, tables=tables, bits=bits, members=members, probes=probes
+    )
     mx.eval(q, k, v, selected)
     chunks = []
     for start in range(0, length, chunk_q):
