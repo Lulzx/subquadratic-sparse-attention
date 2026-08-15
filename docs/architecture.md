@@ -36,7 +36,7 @@ K = tables × probes × members × block width
   = 32 tokens per query
 ```
 
-For example, the recommended collision experiment uses eight tables, two probes, two members, and block width two, giving `K = 64`.
+The recommended fixed-budget configuration uses eight tables, one probe, two members, and block width two, preserving `K = 32`. A controlled four-table/two-probe/two-member variant also preserves `K = 32` and measures the multiprobe effect without increasing attention work.
 
 ## Why include the successor?
 

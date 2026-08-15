@@ -65,6 +65,10 @@ def main():
     parser.add_argument("--log-every", type=int, default=100)
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--eval-batches", type=int, default=16)
+    parser.add_argument(
+        "--resume", default="",
+        help="initialize from an existing safetensors checkpoint; optimizer state starts fresh",
+    )
     parser.add_argument("--output", default="runs/mlx-model.safetensors")
     args = parser.parse_args()
     train_lengths = parse_train_lengths(args.train_lengths, args.seq_len)
@@ -79,6 +83,11 @@ def main():
         heads=args.heads, window=args.window,
         tables=args.tables, bits=args.bits, members=args.members, probes=args.probes,
     )
+    if args.resume:
+        resume_path = pathlib.Path(args.resume)
+        if not resume_path.is_file():
+            parser.error(f"resume checkpoint does not exist: {resume_path}")
+        model.load_weights(str(resume_path))
     optimizer = optim.AdamW(learning_rate=args.lr, weight_decay=0.01)
 
     def loss_fn(model, tokens, batches, positions, targets):

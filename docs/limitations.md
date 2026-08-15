@@ -24,7 +24,7 @@ The router currently receives balance and confidence losses. It is not trained t
 
 ### Collision frontier
 
-The 128-token baseline falls from about 95% at 2K to 78% at 4K. A joint eight-table, two-probe, multi-length configuration raises 4K accuracy to 95.67%, but falls to 75% at 16K in a smaller frontier check. Because selector capacity, read budget, training steps, and curriculum changed together, the experiment does not isolate the dominant cause.
+The 128-token baseline falls from about 95% at 2K to 79% at 4K under the matched ablation protocol. A three-seed, fixed-budget eight-table curriculum configuration raises mean 4K accuracy to 97.03%. Controls identify the curriculum as the dominant measured change, with more tables and multiprobe routing adding smaller consistent gains. On seed 0, stagewise fine-tuning through 8K raises 16K accuracy to 97.38%, but accuracy still falls to 95.32% at 32K. The failure boundary moves with curriculum length rather than disappearing.
 
 ### Tiny model
 
@@ -36,8 +36,8 @@ MLX standard operations are fast enough to validate the design, but hash, gather
 
 ## Highest-value next experiments
 
-1. **Run the collision ablation**: tables, bits, members, and lowest-margin multiprobe count are now configurable; compare them at fixed and increasing `K`.
-2. **Run the length curriculum**: staged 128–1,024-token training is now implemented; train full checkpoints and retest 4K–16K.
+1. **Replicate the extended curriculum**: repeat the 4K/8K curriculum frontier on more seeds and report training memory and throughput alongside accuracy.
+2. **Optimize length transitions**: replicate the fresh-optimizer fine-tuning gain and compare optimizer resets, learning-rate restarts, and randomized length mixtures.
 3. **Semantic routing loss**: distill bucket agreement from fixed-window dense attention or labeled retrieval positions.
 4. **Custom Metal selector**: replace sorting with append-only bucket tails and benchmark true expected-linear prefill/decode behavior.
 5. **Persistent decode cache**: verify token-by-token outputs against parallel causal prefill.

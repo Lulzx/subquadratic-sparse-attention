@@ -31,7 +31,8 @@ The measured baseline combines causal sliding-window attention with content-addr
 | Numerical error against NumPy | **< 9 × 10⁻⁷** |
 | MQAR held-out accuracy at training length | **99.92%** |
 | MQAR accuracy at 16× training length | **95.22%** |
-| MQAR accuracy at the former 4K frontier | **95.67%** |
+| MQAR mean accuracy at the former 4K frontier | **97.03%** |
+| MQAR accuracy at 16K after an 8K fine-tuning stage | **97.38%** |
 
 The model was trained at 128 tokens and evaluated without further training:
 
@@ -44,7 +45,9 @@ The model was trained at 128 tokens and evaluated without further training:
 | 2,048 | 16× | 95.22% |
 | 4,096 | 32× | 77.93% |
 
-A follow-up checkpoint trained with eight tables, two lowest-margin probes, two members, and a staged 128/256/512/1,024-token curriculum reaches **95.67% at 4,096 tokens** (10,960 / 11,456 held-out answers). This is a joint configuration result, not an ablation attributing the gain to any one change.
+A controlled three-seed follow-up with eight tables, one probe, two members, and a staged 128/256/512/1,024-token curriculum reaches **97.03% mean accuracy at 4,096 tokens** (33,347 / 34,368 held-out answers). At the same `K=32` budget, curriculum alone reaches 95.61% and a four-table/two-probe variant reaches 96.81%. Curriculum is the dominant change; additional tables and multiprobe routing each provide a smaller consistent gain.
+
+An exploratory seed-0 checkpoint trained through 4K and then fine-tuned for 300 steps at 8K with a fresh optimizer reaches **97.38% at 16K** and **95.32% at 32K**. Carrying one optimizer through the entire from-scratch 8K curriculum performs worse, at 95.67% and 91.41%. MQAR caps the number of stored associations at 512, so these very long cases primarily test retrieval distance and positional extrapolation rather than increasing task complexity.
 
 > [!IMPORTANT]
 > These are synthetic multi-query associative-recall results from a tiny experimental model. They are not general language-model, RULER, GPQA, or production-serving results.
@@ -111,15 +114,15 @@ python3 mlx_train.py \
   --batch 16 \
   --tables 8 \
   --members 2 \
-  --probes 2 \
-  --output runs/mlx-ssa-multiprobe-curriculum.safetensors
+  --probes 1 \
+  --output runs/mlx-ssa-8table-curriculum.safetensors
 
 python3 mlx_evaluate.py \
-  runs/mlx-ssa-multiprobe-curriculum.safetensors \
+  runs/mlx-ssa-8table-curriculum.safetensors \
   --lengths 128,256,512,1024,2048,4096
 ```
 
-This configuration reads at most 64 selected tokens per query. Training scales the batch inversely with context length to keep the approximate token count per optimizer step bounded.
+This configuration keeps the baseline 32-token selected budget. Training scales the batch inversely with context length to keep the approximate token count per optimizer step bounded. Set `--tables 4 --members 2 --probes 2` to reproduce the fixed-budget multiprobe variant.
 
 Benchmark the memory-bounded MLX paths:
 

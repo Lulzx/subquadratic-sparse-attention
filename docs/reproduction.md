@@ -48,7 +48,7 @@ The command writes weights and a matching JSON configuration under `runs/`. Gene
 
 The seeded reference run reached 100% current-batch accuracy by step 250 and 99.92% held-out accuracy after step 300. Exact timings and optimization trajectories can vary by hardware and MLX version.
 
-To reproduce the multiprobe curriculum checkpoint:
+To reproduce one seed of the recommended eight-table curriculum configuration:
 
 ```bash
 python3 mlx_train.py \
@@ -62,10 +62,59 @@ python3 mlx_train.py \
   --tables 8 \
   --bits 16 \
   --members 2 \
-  --probes 2 \
+  --probes 1 \
   --seed 0 \
-  --output runs/mlx-ssa-multiprobe-curriculum.safetensors
+  --output runs/mlx-ssa-8table-curriculum-seed0.safetensors
 ```
+
+Repeat with seeds 1 and 2, then evaluate each checkpoint with the same held-out protocol:
+
+```bash
+python3 mlx_evaluate.py \
+  runs/mlx-ssa-8table-curriculum-seed0.safetensors \
+  --lengths 4096 \
+  --batch 4 \
+  --batches 16
+```
+
+For the fixed-budget multiprobe comparison, use four tables, two probes, and two members. For the curriculum-only control, use four tables, one probe, and four members. All three configurations have `K=32`.
+
+The exploratory 8K curriculum frontier uses the same model with seven 300-step stages:
+
+```bash
+python3 mlx_train.py \
+  --steps 2100 \
+  --train-lengths 128,256,512,1024,2048,4096,8192 \
+  --batch 16 \
+  --width 64 \
+  --layers 2 \
+  --heads 4 \
+  --window 32 \
+  --tables 8 \
+  --bits 16 \
+  --members 2 \
+  --probes 1 \
+  --seed 0 \
+  --output runs/mlx-ssa-8table-curriculum-8192-seed0.safetensors
+```
+
+Follow the memory-safety checklist before overriding the evaluator cap. The recorded 32K run first used batch 1 and one batch, then increased only the batch count after observing a safe peak.
+
+To continue from a shorter curriculum checkpoint without retraining its earlier stages, pass `--resume`. This restores model weights and intentionally starts a fresh optimizer:
+
+```bash
+python3 mlx_train.py \
+  --resume runs/mlx-ssa-8table-curriculum-4096-seed0.safetensors \
+  --steps 300 \
+  --train-lengths 8192 \
+  --batch 1 \
+  --tables 8 \
+  --members 2 \
+  --probes 1 \
+  --output runs/mlx-ssa-8table-finetune-8192-seed0.safetensors
+```
+
+Architecture arguments must match the source checkpoint. Shape mismatches fail during weight loading rather than silently reinitializing parameters.
 
 ## Length extrapolation
 

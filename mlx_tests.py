@@ -1,4 +1,6 @@
 import math
+import pathlib
+import tempfile
 
 import mlx.core as mx
 import numpy as np
@@ -111,8 +113,27 @@ def test_multiprobe_causality():
     print("PASS multiprobe selector causality under future mutation")
 
 
+def test_weight_resume():
+    from ssa.mlx_model import MLXTinyLM
+
+    original = MLXTinyLM(width=16, layers=1, heads=2, tables=2, bits=4, members=1)
+    tokens = mx.array([[1, 2, 3, 4]])
+    expected = original(tokens)
+    mx.eval(expected)
+    with tempfile.TemporaryDirectory() as directory:
+        checkpoint = pathlib.Path(directory) / "resume.safetensors"
+        original.save_weights(str(checkpoint))
+        restored = MLXTinyLM(width=16, layers=1, heads=2, tables=2, bits=4, members=1)
+        restored.load_weights(str(checkpoint))
+        actual = restored(tokens)
+        mx.eval(actual)
+    np.testing.assert_array_equal(np.array(actual), np.array(expected))
+    print("PASS weights-only checkpoint resume")
+
+
 if __name__ == "__main__":
     test_reference()
     test_multiprobe_neighbor()
     test_length_curriculum()
     test_multiprobe_causality()
+    test_weight_resume()

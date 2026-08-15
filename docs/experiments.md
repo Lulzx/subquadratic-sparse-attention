@@ -116,6 +116,53 @@ This improves the documented 4K baseline from 77.93% to 95.67%, a gain of 17.74 
 
 A smaller batch-1, four-batch frontier check measured 96.09% at 8K (688 / 716) and 75.00% at 16K (537 / 716). MQAR caps stored pairs at 512, so beyond 4K these cases increase retrieval distance and filler rather than the number of associations.
 
+## Controlled 4K ablation
+
+The joint follow-up changed too many variables to identify the source of the gain. A controlled ablation held width, layers, heads, optimizer, 1,200 training steps, curriculum, evaluation seed, and selected budget `K=32` fixed. Each reported selector configuration was trained with seeds 0, 1, and 2 and evaluated on 11,456 answers per seed at 4K.
+
+| Configuration | Seed 0 | Seed 1 | Seed 2 | Aggregate / evaluated | Mean accuracy |
+|---|---:|---:|---:|---:|---:|
+| 4 tables, 1 probe, 4 members | 95.38% | 96.29% | 95.16% | 32,860 / 34,368 | 95.61% |
+| 8 tables, 1 probe, 2 members | 96.99% | 97.38% | 96.72% | 33,347 / 34,368 | **97.03%** |
+| 4 tables, 2 probes, 2 members | 97.01% | 96.60% | 96.82% | 33,272 / 34,368 | 96.81% |
+
+Both extra tables and multiprobe routing improve every tested seed at fixed read budget. Eight tables lead by 0.22 percentage points on the three-seed mean, which is too small a sample to treat as a statistically established difference. It is the recommended configuration because it is slightly better here and avoids multiprobe index expansion.
+
+Two additional seed-0 controls isolate curriculum from training duration under the original four-table selector:
+
+| Training schedule | Steps | 4K accuracy |
+|---|---:|---:|
+| 128 tokens only | 300 | 78.99% |
+| 128 tokens only | 1,200 | 82.30% |
+| 128, 256, 512, 1,024 curriculum | 1,200 | 95.38% |
+
+On this seed and matched evaluation protocol, additional optimizer steps account for 3.31 percentage points, while changing from 128-only training to the length curriculum at 1,200 steps accounts for another 13.08 points. The curriculum is therefore the dominant measured cause of the recovered 4K accuracy.
+
+## Extended-curriculum frontier
+
+Because curriculum was the dominant 4K intervention, a seed-0 exploratory series extended the same eight-table, one-probe, `K=32` model to longer training stages. Every stage received 300 steps. Evaluation used batch 1 and 16 batches at each reported extrapolation length.
+
+| Maximum training length | Training steps | 8K accuracy | 16K accuracy | 32K accuracy |
+|---:|---:|---:|---:|---:|
+| 1,024 | 1,200 | 95.81% | 74.23% | — |
+| 4,096 | 1,800 | 99.97% | 89.70% | — |
+| 8,192 | 2,100 | 100.00% | **95.67%** | 91.41% |
+
+The 16K rows each evaluate 2,864 answers. The 32K result also evaluates 2,864 answers after a one-batch memory-safety probe completed successfully; peak evaluation memory was 499 MB. The 8K training stage raised observed peak training memory to 1.64 GB and reduced average throughput for the full run to 15.4 steps/s.
+
+The movement of the failure frontier strongly tracks maximum curriculum length on this seed. It does not establish the same result across training seeds, and MQAR stops increasing its association count after 4K because the task has only 512 distinct keys. Beyond that point, longer sequences add filler and retrieval distance.
+
+### Stagewise 8K fine-tuning
+
+The 4K checkpoint was also continued for 300 steps at 8K using the new `--resume` path. Model weights were restored, while AdamW state intentionally started fresh.
+
+| 8K training strategy | 16K accuracy | 32K accuracy |
+|---|---:|---:|
+| One optimizer across the full 2,100-step curriculum | 95.67% | 91.41% |
+| Resume 4K checkpoint; fresh optimizer for 300 steps at 8K | **97.38%** | **95.32%** |
+
+Both rows use seed 0 and evaluate 2,864 answers per length. The stagewise run indicates that carrying optimizer moments across large length transitions can hurt the final frontier. It also avoids replaying earlier stages when a shorter-context checkpoint already exists. This is one seed and does not yet establish the best reset schedule or learning rate.
+
 ## PyTorch reference results
 
 The initial PyTorch/MPS language-model curriculum did not learn general associative retrieval in the tested configurations, although it could overfit a fixed batch to 100%. This was useful evidence that optimization worked but the setup was not producing a general circuit.
