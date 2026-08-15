@@ -65,7 +65,7 @@ block anchors, and runs exact token attention inside the selected blocks. A bloc
 searchable only when its final token is strictly before the query's distant-window
 cutoff. Computing summaries for later blocks therefore cannot affect an earlier query.
 
-The current seed-0 experiment uses eight tables, one probe, two blocks per table, and
+The current three-seed experiment uses eight tables, one probe, two blocks per table, and
 four tokens per block:
 
 ```text

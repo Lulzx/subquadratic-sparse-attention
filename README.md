@@ -36,7 +36,7 @@ The measured baseline combines causal sliding-window attention with content-addr
 | LFM2.5 one-layer sparse replacement perplexity penalty | **+1.64% mean** |
 | LFM2.5 two-layer model after KL recovery, 65K-token audit | **0.9675× WikiText / 0.8712× PG-19** |
 | LFM2.5 three-seed retrieval preservation after router supervision | **57 / 78 dense-pass cases** |
-| LFM2.5 seed-0 completed-block retrieval preservation | **21 / 26 dense-pass cases** |
+| LFM2.5 three-seed completed-block retrieval preservation | **64 / 78 dense-pass cases** |
 
 The model was trained at 128 tokens and evaluated without further training:
 

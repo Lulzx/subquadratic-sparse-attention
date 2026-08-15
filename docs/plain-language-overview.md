@@ -57,9 +57,9 @@ activations are cached once and reused. The current one-layer conversion peaks n
   1,024 tokens across all seeds. Long multi-token values remain weak at 6 of 27 and
   are the next retrieval target.
 - Built a causal block index that retrieves complete four-token chunks instead of
-  isolated tokens. On seed 0, a 64-token block budget improves long values from 2/9
-  to 4/9 and overall preservation from 19/26 to 21/26 while retaining the raw-text
-  quality gate. This still needs two more seeds and is not a completed replication.
+  isolated tokens. Across three seeds, a 64-token block budget improves long values
+  from 6/27 to 13/27 and overall preservation from 57/78 to 64/78 while retaining the
+  raw-text quality gate. Exact and paraphrased-name retrieval remain perfect.
 
 ## What this does not prove yet
 
@@ -73,8 +73,8 @@ activations are cached once and reused. The current one-layer conversion peaks n
 
 ## What comes next
 
-The immediate target is replicating the new block-index result across seeds and fixing
-long values without losing the now-preserved exact and lexical cases. The raw-text
+The immediate target is improving the replicated block-index result on long values
+without losing the now-preserved exact and lexical cases. The raw-text
 quality gate and a small instruction check pass, but the retrieval gate is only partial.
 Layer 10 can proceed only after that gate passes. After every new layer, individual and combined quality must
 be measured before proceeding to layers 8, 5, and 2. Only

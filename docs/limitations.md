@@ -41,7 +41,7 @@ MLX standard operations are fast enough to validate the design, but hash, gather
 3. **Semantic routing loss**: distill bucket agreement from fixed-window dense attention or labeled retrieval positions.
 4. **Custom Metal selector**: replace sorting with append-only bucket tails and benchmark true expected-linear prefill/decode behavior.
 5. **Persistent decode cache**: verify token-by-token outputs against parallel causal prefill.
-6. **Replicate and improve block retrieval**: repeat the seed-0 4/9 result, then improve it without regressing 9/9 exact or 8/8 dense-pass lexical-mismatch cases; mean-pooled four-token blocks are only the first summary baseline.
+6. **Improve block retrieval**: raise the replicated 13/27 long-value result without regressing 27/27 exact or 24/24 dense-pass lexical-mismatch cases; mean-pooled four-token blocks are only the first summary baseline.
 7. **Instruction-behavior gate**: compare dense and recovered LFM2.5 on a fixed prompt suite; raw-text perplexity alone cannot establish preserved instruction following.
 8. **Public retrieval suites**: add NIAH, NoLiMa-style lexical mismatch, and RULER tasks beyond the local 1,024-token diagnostic.
 9. **Additional attention layers**: after both behavior gates pass, convert layers 10, 8, 5, and 2 one at a time and rerun all gates.
