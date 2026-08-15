@@ -105,12 +105,98 @@ flowchart LR
     G --> O[Output projection]
 ```
 
-The selector computes hashes directly instead of scoring every query against every key. Portable prefill sorts hash codes in `O(n log n)`; an append-only hash-table implementation has expected `O(n)` construction and constant expected lookup. Attention reads a fixed `K=32`, so its selected-attention work is linear in sequence length.
+The selector computes hashes directly instead of scoring every query against every key.
+It retrieves a bounded distant candidate set
 
-This proves a layer-level compute bound, not unlimited fixed-budget recall: as contexts
-grow, collision capacity may also need to grow. The precise theorem, causal proof,
-bounded quadratic training-teacher caveat, and address-capacity question are documented
-in [Complexity and capacity](docs/complexity-and-capacity.md).
+```text
+K = tables * probes * members * retrieved-token width.
+```
+
+The tiny-model baseline above uses `4 * 1 * 4 * 2 = 32` distant tokens: every retrieved
+anchor contributes itself and its successor. The LFM token router retrieves direct
+positions, while the replicated LFM completed-block path uses
+`8 * 1 * 2 * 4 = 64` distant tokens. Local-window and sink tokens are separate fixed
+budgets.
+
+### Why the layer is mathematically subquadratic
+
+Let sequence length be `n`, model width `d`, tables `T`, bits per table `b`, probes `p`,
+members `m`, selected distant tokens `K`, and local window `W`. The portable prefill
+path performs:
+
+| Component | Work |
+|---|---:|
+| Hash projections | `O(n d T b)` |
+| Lowest-margin multiprobe selection | `O(n T b log b)` |
+| Portable bucket construction | `O(n T (1+p) log(nT(1+p)))` |
+| Bounded predecessor lookup | `O(n T p m)` |
+| Gathered exact attention | `O(n (K+W) d)` |
+
+With model and routing parameters fixed relative to `n`, this becomes
+
+```text
+O(n) + O(n log n) + O(n) = O(n log n) = o(n^2).
+```
+
+The two `argsort` calls remain `O(n log n)` together. There is no hidden all-pairs
+inference router: queries hash to bucket addresses, the selector takes only the `m`
+preceding entries, and the layer gathers K/V states before computing ordinary softmax.
+Candidate selection is approximate; attention over the selected set is exact.
+
+The sort order is causal. A key at position `j` uses suffix `2j+1`, while a query at
+position `i` uses `2*max(i-D,0)`, where `D` excludes the local window. The returned
+anchor is also checked with `j < i-D`. Anchor successors therefore satisfy
+`j+1 <= i-D`, and completed blocks are exposed only when their final token is before
+the same cutoff. Future tokens cannot affect an earlier query's routed set.
+
+The optional semantic-router training objective does build a quadratic teacher matrix,
+but only over `r = min(n, router_teacher_tokens)` positions. Its default `r <= 256`
+keeps that offline training temporary bounded as context grows, and it is absent from
+sparse inference.
+
+### Compute scaling is not recall scaling
+
+The layer-level compute proof does **not** prove that a fixed `K` retains arbitrary old
+information forever. With `b` bits, one table has `2^b` addresses. For an old target
+with `L` later keys, an ideal balanced table has
+
+```text
+C ~ Binomial(L, 2^-b)
+```
+
+later collisions. The target remains in an `m`-member bucket tail only when `C < m`.
+If query/key addresses agree independently with probability `a` in each table, the
+idealized recall ceiling is
+
+```text
+P(recall) = 1 - (1 - a * P[C < m])^T.
+```
+
+For the tiny-model baseline (`b=16`, `T=4`, `m=4`, ideal `a=1`) and the oldest target:
+
+| Context | Expected later colliders/table | Idealized recall | Minimum bits for 95% |
+|---:|---:|---:|---:|
+| 1,024 | 0.0156 | 1.00000000 | 9 |
+| 16,384 | 0.2500 | 1.00000000 | 13 |
+| 65,536 | 1.0000 | 0.99999987 | 15 |
+| 1,048,576 | 16.0000 | 0.00037249 | 19 |
+
+This optimistic calculation isolates collision capacity; learned hashes can also be
+imbalanced, correlated, or fail query/key agreement. Letting `b=Theta(log n)` could
+grow address capacity while remaining subquadratic, but the current implementation
+uses `int32` codes and supports at most 30 bits. The full converted LFM is also not yet
+wholly subquadratic: four of its six attention layers remain dense, and persistent
+incremental decoding is not implemented.
+
+Run the constant-memory capacity calculator with:
+
+```bash
+python3 capacity_scaling.py --self-test
+python3 capacity_scaling.py --lengths 1024,4096,16384,65536,1048576
+```
+
+See [Complexity and capacity](docs/complexity-and-capacity.md) for the complete theorem,
+memory bound, assumptions, and unresolved recall-scaling problem.
 
 [Read the architecture rationale →](docs/architecture.md)
 
