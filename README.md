@@ -87,6 +87,11 @@ supplies bidirectional semantic block embeddings. Both run locally on Apple Sili
 An LFM causal layer-14 smoke test peaks at 672 MB of MLX memory; the separate embedding
 probe exposes table-count and Hamming-multiprobe recall/candidate tradeoffs. These are
 router plumbing results, not evidence that donor language quality has been preserved.
+An inference-aligned router follow-up defines teacher importance as attention weight
+times value norm and trains hard Hamming matches with each table responsible for four
+of the top 32 targets. Across three seeds, retained teacher contribution rises from
+23.41% to 30.97% and hard top-1 recall from 28.27% to 37.40%, while collision
+inflation falls from 17.22× to 13.39× the balanced 8-bit baseline.
 
 ## Architecture
 
@@ -305,6 +310,7 @@ mlx_selector.py         # selector benchmark
 mlx_attention_bench.py  # selected-attention benchmark
 capacity_scaling.py     # constant-memory idealized hash-capacity calculator
 validate_scaling.py     # finite scaling, capacity, dense-reference, and causality report
+mlx_router_audit.py     # learned-router agreement, occupancy, and failure attribution
 replicate.py            # arithmetic audit of public model-card tables
 docs/                   # complete technical record
 ```

@@ -8,7 +8,7 @@ import mlx.optimizers as optim
 import numpy as np
 
 from mlx_train import curriculum_length, scaled_batch_size
-from mlx_donor_router import DonorHashRouter
+from mlx_donor_router import DonorHashRouter, hard_metrics
 from mlx_lfm_replacement import GatedLFMReplacement
 from ssa.mlx_attention import random_weights, sparse_attention, sparse_attention_chunked
 from ssa.mlx_model import MLXSSAAttention, causal_slot_attention
@@ -287,6 +287,53 @@ def test_semantic_router_gradient():
     print("PASS semantic router loss is finite and updates hash projections")
 
 
+def test_learned_router_diagnostics():
+    mx.random.seed(31)
+    length, query_start = 24, 6
+    x = mx.random.normal((1, length, 8))
+    teacher = np.zeros((1, length - query_start, length), dtype=np.float32)
+    for offset, position in enumerate(range(query_start, length)):
+        teacher[0, offset, max(1, position - 5)] = 1.0
+    router = DonorHashRouter(width=8, tables=2, bits=4)
+    loss, parts = router.loss(
+        x,
+        mx.array(teacher),
+        query_start,
+        window=2,
+        sink_tokens=1,
+        alignment_weight=0.1,
+        balance_weight=10.0,
+        decorrelation_weight=1.0,
+        retrieval_weight=1.0,
+        retrieval_topk=4,
+        retrieval_positive_weight=20.0,
+    )
+    mx.eval(loss, parts)
+    assert math.isfinite(float(loss))
+    assert len(parts) == 6 and all(math.isfinite(float(part)) for part in parts)
+    metrics = hard_metrics(
+        router,
+        [(x, mx.array(teacher), query_start)],
+        members=2,
+        probes=1,
+        window=2,
+        sink_tokens=1,
+    )
+    assert metrics["queries"] == length - query_start
+    assert len(metrics["query_key_agreement"]["exact_by_table"]) == 2
+    assert len(metrics["bucket_occupancy"]["by_table"]) == 2
+    assert len(metrics["table_retrieval"]["success_by_table"]) == 2
+    attribution = metrics["failure_attribution"]
+    assert (
+        attribution["no_probed_address_agreement"]
+        + attribution["agreement_without_selection"]
+        + attribution["selected"]
+        == metrics["queries"]
+    )
+    assert metrics["distance"]["1-64"]["queries"] == metrics["queries"]
+    print("PASS learned-router agreement, occupancy, correlation, and distance diagnostics")
+
+
 def test_weight_resume():
     from ssa.mlx_model import MLXTinyLM
 
@@ -363,5 +410,6 @@ if __name__ == "__main__":
     test_block_selector_causality()
     test_causal_global_slots()
     test_semantic_router_gradient()
+    test_learned_router_diagnostics()
     test_weight_resume()
     test_lfm_replacement_gate_and_causality()

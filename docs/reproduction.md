@@ -166,6 +166,44 @@ python3 mlx_donor_router.py \
 Use `--model LiquidAI/LFM2.5-350M-Base` for the base-model ablation. The historical
 SmolLM2 protocol below remains the reproducible three-seed baseline.
 
+Continue each original router with the inference-aligned objective. The default
+teacher target is normalized attention probability times value-vector L2 norm; the
+top 32 targets are assigned four per table and trained from straight-through hard
+Hamming distance:
+
+```bash
+for seed in 0 1 2; do
+  python3 mlx_donor_router.py \
+    --init-checkpoint "runs/lfm2.5-layer14-router-seed${seed}.safetensors" \
+    --layer 14 --seq-len 256 --stride 192 \
+    --window 32 --sink-tokens 4 \
+    --tables 8 --bits 8 --members 4 --probes 1 \
+    --steps 200 --lr 0.003 \
+    --retrieval-weight 1 --retrieval-topk 32 \
+    --retrieval-positive-weight 10 \
+    --train-segments 8 --eval-segments 4 --seed "$seed" \
+    --output "runs/lfm2.5-layer14-hard-hamming-seed${seed}.safetensors"
+done
+```
+
+Audit agreement, occupancy, table dependence, distance-conditioned recall, candidate
+counts, and retained teacher contribution for the resulting routers with:
+
+```bash
+python3 mlx_router_audit.py \
+  runs/lfm2.5-layer14-hard-hamming-seed0.safetensors \
+  runs/lfm2.5-layer14-hard-hamming-seed1.safetensors \
+  runs/lfm2.5-layer14-hard-hamming-seed2.safetensors \
+  --eval-segments 4 \
+  --output runs/lfm2.5-layer14-learned-router-audit.json \
+  --markdown-output runs/lfm2.5-layer14-learned-router-audit.md
+```
+
+The trainer records SHA-256 hashes for new training and evaluation corpora. The auditor
+also hashes checkpoints, metadata, and evaluation files, requires compatible router
+configurations, and evaluates every seed on the same held-out segments. Its default
+1,400 MB working-set limit peaked at 838 MB for this three-seed audit.
+
 ### One-layer LFM2.5 sparse conversion
 
 First produce router checkpoints for seeds 0, 1, and 2 with the causal-donor command

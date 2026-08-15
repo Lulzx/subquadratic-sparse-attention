@@ -1,4 +1,5 @@
 import argparse
+import hashlib
 import json
 import math
 import pathlib
@@ -11,7 +12,7 @@ import numpy as np
 from mlx_lm import load
 from mlx_lm.models.base import create_attention_mask, create_ssm_mask
 
-from ssa.mlx_selector import select_indices_qk
+from ssa.mlx_selector import hash_codes, probe_codes, select_indices_qk
 
 
 DEFAULT_TRAIN_FILES = [
@@ -52,7 +53,9 @@ class DonorHashRouter(nn.Module):
         return mx.stop_gradient(binary - continuous) + continuous
 
     def loss(self, x, teacher_probability, query_start, window, sink_tokens,
-             alignment_weight, balance_weight):
+             alignment_weight, balance_weight, decorrelation_weight=0.0,
+             retrieval_weight=1.0, retrieval_topk=32,
+             retrieval_positive_weight=10.0):
         query_logits, key_logits = self.logits(x)
         query_logits = query_logits[:, query_start:]
         # Forward values are the exact +/-1 bits used by Hamming lookup while
@@ -72,6 +75,39 @@ class DonorHashRouter(nn.Module):
             mx.sum(teacher_probability * student_log_probability, axis=-1)
         )
 
+        # The deployed selector succeeds only when at least one complete table
+        # address agrees. Train the probability of that discrete event instead
+        # of relying only on a smooth Hamming-similarity distribution.
+        hamming_distance = (self.bits - student_by_table) / 2.0
+        # Positive only for an exact hard-code match, with a differentiable
+        # straight-through distance. A one-bit mismatch is already negative.
+        table_match_logit = 2.0 * (0.5 - hamming_distance)
+        label_count = min(retrieval_topk, teacher_probability.shape[-1])
+        # Allocate teacher targets across tables in decreasing-importance order.
+        # With topk == tables * members, each table learns exactly the number of
+        # positives its bounded bucket tail can retain instead of all tables
+        # collapsing onto the same popular keys.
+        teacher_order = mx.argsort(-teacher_probability, axis=-1)
+        teacher_rank = mx.argsort(teacher_order, axis=-1)
+        table_index = mx.arange(self.tables).reshape(1, 1, 1, -1)
+        retrieval_labels = (
+            (teacher_probability[..., None] > 0.0)
+            & (teacher_rank[..., None] < label_count)
+            & ((teacher_rank[..., None] % self.tables) == table_index)
+        ).astype(table_match_logit.dtype)
+        retrieval_weights = 1.0 + (
+            retrieval_positive_weight - 1.0
+        ) * retrieval_labels
+        retrieval_terms = retrieval_weights * (
+            mx.logaddexp(mx.zeros_like(table_match_logit), table_match_logit)
+            - retrieval_labels * table_match_logit
+        )
+        eligible_float = eligible[..., None].astype(retrieval_terms.dtype)
+        retrieval_bce = mx.sum(retrieval_terms * eligible_float) / mx.maximum(
+            mx.sum(eligible_float) * self.tables,
+            mx.array(1.0, retrieval_terms.dtype),
+        )
+
         top_key = mx.argmax(teacher_probability, axis=-1)
         batch_index = mx.arange(x.shape[0]).reshape(-1, 1)
         query_probability = mx.sigmoid(query_logits)
@@ -84,7 +120,6 @@ class DonorHashRouter(nn.Module):
             mx.log(mx.maximum(same_bit, mx.array(1e-6, same_bit.dtype))), axis=-1
         )
         alignment = -mx.mean(mx.max(log_table_match, axis=-1))
-
         probabilities = [mx.sigmoid(query_logits), mx.sigmoid(key_logits)]
         balance = mx.mean(mx.stack([
             mx.mean(mx.square(mx.mean(probability, axis=(0, 1)) - 0.5))
@@ -93,11 +128,40 @@ class DonorHashRouter(nn.Module):
         confidence = mx.mean(mx.stack([
             mx.mean(probability * (1.0 - probability)) for probability in probabilities
         ]))
+        decorrelation_terms = []
+        for logits in (query_logits, key_logits):
+            values = mx.tanh(logits).reshape(-1, self.tables * self.bits)
+            values = values - mx.mean(values, axis=0, keepdims=True)
+            covariance = (values.T @ values) / max(values.shape[0], 1)
+            variance = mx.diag(covariance)
+            scale = mx.sqrt(mx.maximum(
+                variance[:, None] * variance[None, :],
+                mx.array(1e-6, covariance.dtype),
+            ))
+            correlation = covariance / scale
+            off_diagonal = correlation * (
+                1.0 - mx.eye(correlation.shape[0], dtype=correlation.dtype)
+            )
+            dimensions = correlation.shape[0]
+            decorrelation_terms.append(
+                mx.sum(mx.square(off_diagonal))
+                / max(dimensions * (dimensions - 1), 1)
+            )
+        decorrelation = mx.mean(mx.stack(decorrelation_terms))
         total = (
             cross_entropy + alignment_weight * alignment
             + balance_weight * balance + 0.01 * confidence
+            + decorrelation_weight * decorrelation
+            + retrieval_weight * retrieval_bce
         )
-        return total, (cross_entropy, alignment, balance, confidence)
+        return total, (
+            cross_entropy,
+            retrieval_bce,
+            alignment,
+            balance,
+            confidence,
+            decorrelation,
+        )
 
 
 def parse_paths(spec, defaults):
@@ -107,6 +171,14 @@ def parse_paths(spec, defaults):
     if missing:
         raise FileNotFoundError(f"missing corpus files: {', '.join(missing)}")
     return paths
+
+
+def sha256(path):
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 def token_segments(tokenizer, paths, seq_len, stride, limit):
@@ -156,6 +228,7 @@ def donor_example(model, tokens, layer_index, window, sink_tokens):
     else:
         queries = query_projection.reshape(batch, length, heads, head_dim)
     keys = attention.k_proj(x).reshape(batch, length, kv_heads, head_dim)
+    values = attention.v_proj(x).reshape(batch, length, kv_heads, head_dim)
     query_norm = getattr(attention, "q_norm", None)
     if query_norm is None:
         query_norm = getattr(attention, "q_layernorm", None)
@@ -168,10 +241,12 @@ def donor_example(model, tokens, layer_index, window, sink_tokens):
         keys = key_norm(keys)
     queries = queries.transpose(0, 2, 1, 3)
     keys = keys.transpose(0, 2, 1, 3)
+    values = values.transpose(0, 2, 1, 3)
     queries = attention.rope(queries)
     keys = attention.rope(keys)
     if heads != kv_heads:
         keys = mx.repeat(keys, heads // kv_heads, axis=1)
+        values = mx.repeat(values, heads // kv_heads, axis=1)
     query_start = window + sink_tokens + 1
     queries = queries[:, :, query_start:]
     scores = mx.einsum("bhqd,bhkd->bhqk", queries, keys) * attention.scale
@@ -179,11 +254,115 @@ def donor_example(model, tokens, layer_index, window, sink_tokens):
     key_positions = mx.arange(length).reshape(1, -1)
     eligible = (key_positions < query_positions - window) & (key_positions >= sink_tokens)
     scores = mx.where(eligible, scores, mx.array(-1e9, scores.dtype))
-    teacher_probability = mx.mean(mx.softmax(scores.astype(mx.float32), axis=-1), axis=1)
+    attention_probability = mx.softmax(scores.astype(mx.float32), axis=-1)
+    value_norm = mx.sqrt(mx.sum(mx.square(values.astype(mx.float32)), axis=-1))
+    contribution = attention_probability * value_norm[:, :, None, :]
+    teacher_probability = mx.mean(contribution, axis=1)
+    teacher_probability = teacher_probability / mx.maximum(
+        mx.sum(teacher_probability, axis=-1, keepdims=True),
+        mx.array(1e-12, teacher_probability.dtype),
+    )
     x = mx.stop_gradient(x)
     teacher_probability = mx.stop_gradient(teacher_probability)
     mx.eval(x, teacher_probability)
     return x, teacher_probability, query_start
+
+
+def _mean_pairwise_correlation(values):
+    values = np.asarray(values, dtype=np.float64)
+    variable = values[:, np.std(values, axis=0) > 0.0]
+    if variable.shape[1] < 2:
+        return None
+    correlation = np.corrcoef(variable, rowvar=False)
+    upper = correlation[np.triu_indices(correlation.shape[0], 1)]
+    finite = upper[np.isfinite(upper)]
+    return float(np.mean(finite)) if finite.size else None
+
+
+def _occupancy_metrics(code_batches, tables, bits):
+    bucket_count = 1 << bits
+    histogram = np.zeros(1, dtype=np.int64)
+    per_table = [[] for _ in range(tables)]
+    for codes in code_batches:
+        for batch in range(codes.shape[0]):
+            for table in range(tables):
+                counts = np.bincount(
+                    codes[batch, :, table], minlength=bucket_count
+                )
+                load_histogram = np.bincount(counts)
+                if load_histogram.size > histogram.size:
+                    histogram = np.pad(
+                        histogram, (0, load_histogram.size - histogram.size)
+                    )
+                histogram[: load_histogram.size] += load_histogram
+                occupied = counts[counts > 0]
+                probabilities = occupied / max(int(counts.sum()), 1)
+                entropy = -float(
+                    np.sum(probabilities * np.log2(probabilities))
+                )
+                pair_denominator = int(counts.sum()) * (int(counts.sum()) - 1)
+                pair_collision = (
+                    float(np.sum(counts * (counts - 1)) / pair_denominator)
+                    if pair_denominator
+                    else 0.0
+                )
+                per_table[table].append({
+                    "empty_bucket_fraction": float(np.mean(counts == 0)),
+                    "maximum_load": int(occupied.max()) if occupied.size else 0,
+                    "p95_occupied_load": float(np.percentile(occupied, 95))
+                    if occupied.size else 0.0,
+                    "p99_occupied_load": float(np.percentile(occupied, 99))
+                    if occupied.size else 0.0,
+                    "normalized_entropy": entropy / bits,
+                    "pair_collision_probability": pair_collision,
+                    "collision_inflation_vs_balanced": pair_collision * bucket_count,
+                })
+
+    def summarize(rows):
+        return {
+            key: float(np.mean([row[key] for row in rows]))
+            for key in rows[0]
+        }
+
+    by_table = [summarize(rows) for rows in per_table]
+    all_rows = [row for rows in per_table for row in rows]
+    return {
+        "bucket_load_histogram": {
+            str(load): int(count)
+            for load, count in enumerate(histogram)
+            if count
+        },
+        "mean": summarize(all_rows),
+        "by_table": by_table,
+    }
+
+
+def _distance_metrics(distances, recall, retained_mass, candidates):
+    ranges = [
+        ("1-64", 1, 64),
+        ("65-128", 65, 128),
+        ("129-256", 129, 256),
+        ("257-512", 257, 512),
+        ("513+", 513, None),
+    ]
+    result = {}
+    distances = np.asarray(distances)
+    recall = np.asarray(recall, dtype=np.float64)
+    retained_mass = np.asarray(retained_mass, dtype=np.float64)
+    candidates = np.asarray(candidates, dtype=np.float64)
+    for label, lower, upper in ranges:
+        selected = distances >= lower
+        if upper is not None:
+            selected &= distances <= upper
+        if not np.any(selected):
+            continue
+        result[label] = {
+            "queries": int(np.sum(selected)),
+            "teacher_top1_recall": float(np.mean(recall[selected])),
+            "retained_teacher_mass": float(np.mean(retained_mass[selected])),
+            "mean_unique_candidates": float(np.mean(candidates[selected])),
+        }
+    return result
 
 
 def hard_metrics(router, examples, members, probes, window, sink_tokens):
@@ -193,6 +372,11 @@ def hard_metrics(router, examples, members, probes, window, sink_tokens):
     soft_retained_mass = []
     soft_top_one = []
     teacher_top_positions = []
+    exact_agreement_rows = []
+    probed_agreement_rows = []
+    table_success_rows = []
+    key_code_batches = []
+    retrieval_distances = []
     for x, teacher_probability, query_start in examples:
         query_logits, key_logits = router.logits(x)
         query_code = mx.tanh(query_logits[:, query_start:])
@@ -205,10 +389,24 @@ def hard_metrics(router, examples, members, probes, window, sink_tokens):
             tables=router.tables, bits=router.bits, members=members, probes=probes, block=False,
             min_distance=window,
         )
-        mx.eval(selected, teacher_probability, soft_scores)
+        query_codes = probe_codes(
+            x, router.query_projection, router.tables, router.bits, probes
+        )
+        key_codes = hash_codes(
+            x, router.key_projection, router.tables, router.bits
+        )
+        mx.eval(
+            selected, teacher_probability, soft_scores, query_codes, key_codes
+        )
         selected_np = np.array(selected)
         teacher_np = np.array(teacher_probability)
         soft_np = np.array(soft_scores)
+        query_codes_np = np.array(query_codes)
+        key_codes_np = np.array(key_codes)
+        key_code_batches.append(key_codes_np)
+        selected_by_table = selected_np.reshape(
+            *selected_np.shape[:2], router.tables, probes, members
+        )
         soft_budget = router.tables * members * probes
         for batch in range(selected_np.shape[0]):
             for offset, position in enumerate(range(query_start, selected_np.shape[1])):
@@ -217,6 +415,22 @@ def hard_metrics(router, examples, members, probes, window, sink_tokens):
                 candidates.append(len(valid))
                 teacher_top = int(np.argmax(teacher_np[batch, offset]))
                 teacher_top_positions.append(teacher_top)
+                retrieval_distances.append(position - teacher_top)
+                target_codes = key_codes_np[batch, teacher_top]
+                query_table_codes = query_codes_np[batch, position]
+                exact_agreement_rows.append(
+                    query_table_codes[:, 0] == target_codes
+                )
+                probed_agreement_rows.append(
+                    np.any(query_table_codes == target_codes[:, None], axis=-1)
+                )
+                table_success_rows.append(
+                    np.any(
+                        selected_by_table[batch, position]
+                        == teacher_top,
+                        axis=(1, 2),
+                    )
+                )
                 eligible_positions = np.arange(sink_tokens, position - window)
                 count = min(soft_budget, len(eligible_positions))
                 soft_order = np.argsort(soft_np[batch, offset, eligible_positions])[-count:]
@@ -229,6 +443,29 @@ def hard_metrics(router, examples, members, probes, window, sink_tokens):
                 else:
                     retained_mass.append(0.0)
                     top_one.append(False)
+    exact_agreement = np.asarray(exact_agreement_rows, dtype=bool)
+    probed_agreement = np.asarray(probed_agreement_rows, dtype=bool)
+    table_success = np.asarray(table_success_rows, dtype=bool)
+    actual_recall = np.asarray(top_one, dtype=bool)
+    table_success_rate = np.mean(table_success, axis=0)
+    independent_recall = 1.0 - float(np.prod(1.0 - table_success_rate))
+    agreement_any = np.any(probed_agreement, axis=1)
+    selected_any = np.any(table_success, axis=1)
+    attribution = {
+        "no_probed_address_agreement": int(np.sum(~agreement_any)),
+        "agreement_without_selection": int(
+            np.sum(agreement_any & ~selected_any)
+        ),
+        "selected": int(np.sum(selected_any)),
+    }
+    total_queries = len(actual_recall)
+    attribution["fractions"] = {
+        key: value / total_queries
+        for key, value in attribution.items()
+        if key != "fractions"
+    }
+    candidate_array = np.asarray(candidates, dtype=np.float64)
+    retained_array = np.asarray(retained_mass, dtype=np.float64)
     return {
         "retained_teacher_mass": float(np.mean(retained_mass)),
         "teacher_top1_recall": float(np.mean(top_one)),
@@ -240,6 +477,40 @@ def hard_metrics(router, examples, members, probes, window, sink_tokens):
             np.max(np.bincount(teacher_top_positions)) / len(teacher_top_positions)
         ),
         "queries": len(retained_mass),
+        "query_key_agreement": {
+            "exact_any_table": float(np.mean(np.any(exact_agreement, axis=1))),
+            "probed_any_table": float(np.mean(agreement_any)),
+            "exact_by_table": np.mean(exact_agreement, axis=0).tolist(),
+            "probed_by_table": np.mean(probed_agreement, axis=0).tolist(),
+        },
+        "bucket_occupancy": _occupancy_metrics(
+            key_code_batches, router.tables, router.bits
+        ),
+        "table_retrieval": {
+            "success_by_table": table_success_rate.tolist(),
+            "mean_pairwise_success_correlation": _mean_pairwise_correlation(
+                table_success
+            ),
+            "independence_predicted_top1_recall": independent_recall,
+            "actual_top1_recall": float(np.mean(actual_recall)),
+            "prediction_gap": float(np.mean(actual_recall)) - independent_recall,
+        },
+        "failure_attribution": attribution,
+        "distance": _distance_metrics(
+            retrieval_distances, top_one, retained_mass, candidates
+        ),
+        "candidate_distribution": {
+            "mean": float(np.mean(candidate_array)),
+            "p05": float(np.percentile(candidate_array, 5)),
+            "p50": float(np.percentile(candidate_array, 50)),
+            "p95": float(np.percentile(candidate_array, 95)),
+        },
+        "retained_mass_distribution": {
+            "mean": float(np.mean(retained_array)),
+            "p05": float(np.percentile(retained_array, 5)),
+            "p50": float(np.percentile(retained_array, 50)),
+            "p95": float(np.percentile(retained_array, 95)),
+        },
     }
 
 
@@ -259,12 +530,17 @@ def main():
     parser.add_argument("--lr", type=float, default=3e-3)
     parser.add_argument("--alignment-weight", type=float, default=0.1)
     parser.add_argument("--balance-weight", type=float, default=10.0)
+    parser.add_argument("--decorrelation-weight", type=float, default=0.0)
+    parser.add_argument("--retrieval-weight", type=float, default=1.0)
+    parser.add_argument("--retrieval-topk", type=int, default=32)
+    parser.add_argument("--retrieval-positive-weight", type=float, default=10.0)
     parser.add_argument("--train-segments", type=int, default=8)
     parser.add_argument("--eval-segments", type=int, default=2)
     parser.add_argument("--train-files", default="")
     parser.add_argument("--eval-files", default="")
     parser.add_argument("--log-every", type=int, default=25)
     parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument("--init-checkpoint", default="")
     parser.add_argument("--output", default="runs/lfm2.5-router.safetensors")
     args = parser.parse_args()
     if args.seq_len <= args.window + 1:
@@ -275,6 +551,10 @@ def main():
         parser.error("--bits must be between 1 and 30")
     if args.probes < 1 or args.probes > args.bits + 1:
         parser.error("--probes must be between 1 and --bits + 1")
+    if args.retrieval_topk < 1 or args.retrieval_topk > args.seq_len:
+        parser.error("--retrieval-topk must be between 1 and --seq-len")
+    if args.retrieval_positive_weight < 1.0:
+        parser.error("--retrieval-positive-weight must be at least 1")
     mx.random.seed(args.seed)
 
     train_paths = parse_paths(args.train_files, DEFAULT_TRAIN_FILES)
@@ -310,6 +590,12 @@ def main():
     mx.clear_cache()
 
     router = DonorHashRouter(width, args.tables, args.bits)
+    if args.init_checkpoint:
+        checkpoint = pathlib.Path(args.init_checkpoint)
+        if not checkpoint.is_file():
+            parser.error(f"--init-checkpoint does not exist: {checkpoint}")
+        router.load_weights(str(checkpoint))
+        mx.eval(router.parameters())
     before = hard_metrics(
         router, eval_examples, args.members, args.probes, args.window, args.sink_tokens
     )
@@ -319,6 +605,10 @@ def main():
         return model.loss(
             x, teacher, query_start, args.window, args.sink_tokens,
             args.alignment_weight, args.balance_weight,
+            args.decorrelation_weight,
+            args.retrieval_weight,
+            args.retrieval_topk,
+            args.retrieval_positive_weight,
         )
 
     loss_and_grad = nn.value_and_grad(router, loss_fn)
@@ -329,14 +619,23 @@ def main():
         optimizer.update(router, gradients)
         mx.eval(router.parameters(), optimizer.state, loss, parts)
         if step == 1 or step % args.log_every == 0 or step == args.steps:
-            cross_entropy, alignment, balance, confidence = map(float, parts)
+            (
+                cross_entropy,
+                retrieval_bce,
+                alignment,
+                balance,
+                confidence,
+                decorrelation,
+            ) = map(float, parts)
             print(json.dumps({
                 "step": step,
                 "loss": round(float(loss), 5),
                 "cross_entropy": round(cross_entropy, 5),
+                "retrieval_bce": round(retrieval_bce, 5),
                 "alignment": round(alignment, 5),
                 "balance": round(balance, 5),
                 "confidence": round(confidence, 5),
+                "decorrelation": round(decorrelation, 5),
                 "steps_per_second": round(step / (time.perf_counter() - started), 3),
                 "peak_memory_mb": round(mx.get_peak_memory() / 2**20, 2),
             }), flush=True)
@@ -349,6 +648,7 @@ def main():
     router.save_weights(str(output))
     donor_config = config.get("text_config", config)
     metadata = vars(args) | {
+        "teacher_target": "normalized_mean_attention_probability_times_value_l2_norm",
         "donor_config": {
             key: donor_config.get(key) for key in [
                 "model_type", "hidden_size", "num_hidden_layers",
@@ -357,6 +657,12 @@ def main():
         },
         "train_files_resolved": [str(path) for path in train_paths],
         "eval_files_resolved": [str(path) for path in eval_paths],
+        "train_corpus": [
+            {"path": str(path), "sha256": sha256(path)} for path in train_paths
+        ],
+        "eval_corpus": [
+            {"path": str(path), "sha256": sha256(path)} for path in eval_paths
+        ],
         "before": before,
         "after": after,
     }

@@ -194,6 +194,10 @@ def train_router(model, replacement, targets, args, layer):
             args.sink_tokens,
             args.alignment_weight,
             args.balance_weight,
+            args.decorrelation_weight,
+            args.retrieval_weight,
+            args.retrieval_topk,
+            args.retrieval_positive_weight,
         )
         return loss, parts
 
@@ -228,17 +232,22 @@ def train_router(model, replacement, targets, args, layer):
         optimizer.update(router, gradients)
         mx.eval(router.parameters(), optimizer.state, loss, parts)
         if step == 1 or step % args.log_every == 0 or step == args.steps:
-            print(json.dumps({
+            metrics = {
                 "layer": layer,
                 "step": step,
                 "loss": round(float(loss), 5),
                 "cross_entropy": round(float(parts[0]), 5),
-                "alignment": round(float(parts[1]), 5),
                 "steps_per_second": round(
                     step / (time.perf_counter() - started), 3
                 ),
                 "peak_memory_mb": round(mx.get_peak_memory() / 2**20, 2),
-            }), flush=True)
+            }
+            if args.block_size:
+                metrics["alignment"] = round(float(parts[1]), 5)
+            else:
+                metrics["retrieval_bce"] = round(float(parts[1]), 5)
+                metrics["alignment"] = round(float(parts[2]), 5)
+            print(json.dumps(metrics), flush=True)
         del tokens, x, x_np, teacher, loss, parts, gradients
         mx.clear_cache()
     router.freeze()
@@ -268,6 +277,10 @@ def main():
     parser.add_argument("--lr", type=float, default=3e-4)
     parser.add_argument("--alignment-weight", type=float, default=0.1)
     parser.add_argument("--balance-weight", type=float, default=10.0)
+    parser.add_argument("--decorrelation-weight", type=float, default=0.0)
+    parser.add_argument("--retrieval-weight", type=float, default=1.0)
+    parser.add_argument("--retrieval-topk", type=int, default=32)
+    parser.add_argument("--retrieval-positive-weight", type=float, default=10.0)
     parser.add_argument("--log-every", type=int, default=100)
     parser.add_argument("--memory-limit-mb", type=int, default=1792)
     parser.add_argument("--cache-limit-mb", type=int, default=256)

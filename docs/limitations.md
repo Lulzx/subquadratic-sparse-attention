@@ -18,9 +18,14 @@ The current MLX selector sorts hash assignments. The intended append-only hash-t
 
 Causality is validated, but production autoregressive state management—bucket storage, KV cache ownership, eviction, batching, and beam behavior—is not implemented.
 
-### Discrete routing objective is weak
+### Learned hard routing remains lossy
 
-The router currently receives balance and confidence losses. It is not trained to reproduce dense-attention mass or to maximize semantic retrieval recall. Hard routing has no task gradient through its indices.
+The natural-language donor routers now receive dense-attention or labeled-retrieval
+supervision, but hard indices still have no task gradient. A three-seed LFM2.5
+layer-14 audit finds hard top-1 recall well below query/key address agreement. Learned
+buckets are highly imbalanced, and recall degrades sharply with retrieval distance.
+Semantic agreement and collision survival both remain active bottlenecks; exact
+measurements and corpus hashes are recorded in [Experiments](experiments.md).
 
 ### Collision frontier
 

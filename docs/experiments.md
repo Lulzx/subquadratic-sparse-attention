@@ -271,6 +271,53 @@ top-1 recall rose from 51.60% to 62.25%, leaving a 29.30-point hard-index gap. P
 memory was 834.90 MB. This validates current-model router learning, but still does not
 replace a donor layer or establish preserved language quality.
 
+### Learned-router failure attribution
+
+The three trained layer-14 checkpoints were re-audited on four held-out 256-token
+segments per seed (876 distant queries per seed). Teacher importance is the mean over
+heads of attention probability multiplied by value-vector L2 norm, normalized over
+eligible distant keys. This follows the pivotal-token contribution criterion in
+[HashAttention](https://arxiv.org/abs/2412.14468). The audit measures hard selected
+candidates, address occupancy, table dependence, and retrieval distance from the same
+evaluation examples.
+
+| Diagnostic | Original objective | Inference-aligned objective |
+|---|---:|---:|
+| Exact query/key agreement in any table | 69.14% | **80.33%** |
+| Hard teacher top-1 recall | 28.27% | **37.40%** |
+| Hard retained teacher contribution | 23.41% | **30.97%** |
+| Soft top-32 teacher top-1 recall | 65.53% | **74.77%** |
+| Mean unique hard candidates | 12.33 | 15.96 |
+| Pair-collision inflation over balanced 8-bit hashes | 17.22× | **13.39×** |
+| No-address-agreement failure | 30.86% | **19.67%** |
+| Agreement followed by bucket-tail eviction | **40.87%** | 42.92% |
+
+The follow-up continues each original seed for 200 steps. It adds weighted top-32
+binary classification, as used by HashAttention, but adapts it to SubQ's bounded
+lookup: importance-ranked targets are distributed round-robin across eight tables, so
+each table owns four positives matching its four-member tail. The classifier consumes
+straight-through hard Hamming distance, not soft bit probabilities. Positive weight
+10 was selected by a seed-0 sweep over 5, 10, and 20.
+
+The first unpartitioned objective exposed a collapse mode: address agreement reached
+99.43%, but collision inflation reached 64.16× and recall only 32.88%. A generic bit
+decorrelation loss also reduced collisions while harming agreement and recall. The
+capacity-aware objective avoids both errors: compared with the original objective,
+retained contribution and top-1 recall each improve 32.3%, while collision inflation
+falls 22.2%. Retained contribution improves by 32.0%, 29.5%, and 42.0% in the 1–64,
+65–128, and 129–256 distance bands respectively. Long-distance top-1 recall remains
+6.11%, so bounded-tail eviction is still the dominant unresolved bottleneck.
+
+[BinaryPC](https://arxiv.org/abs/2608.04405) independently supports data-aware binary
+codes and a small error-aware safeguard for hard-to-hash tokens. Its global Hamming
+top-k scan is not adopted here because it would reintroduce quadratic query-by-history
+work in the current portable implementation. A fixed-budget causal safeguard remains
+a separate experiment, not part of these results.
+
+This is a failure attribution and objective ablation for a standalone trained router. It does not replace
+the existing perplexity and behavior gates for converted models. Reproduce it with
+`mlx_router_audit.py` as documented in [Reproduction](reproduction.md).
+
 The embedding probe used 40 repository-documentation sections for training and 32
 sections from disjoint files for evaluation. A query is a heading and its positive
 document is that section body. Continuous cosine top-1 recall was 28.12%. The table
