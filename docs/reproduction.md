@@ -116,6 +116,72 @@ python3 mlx_train.py \
 
 Architecture arguments must match the source checkpoint. Shape mismatches fail during weight loading rather than silently reinitializing parameters.
 
+## Semantic-router and compressed-global experiment
+
+The research variant is opt-in so existing checkpoints and baseline commands remain
+unchanged:
+
+```bash
+python3 mlx_train.py \
+  --steps 300 \
+  --seq-len 128 \
+  --batch 16 \
+  --width 64 \
+  --layers 2 \
+  --heads 4 \
+  --window 32 \
+  --tables 8 \
+  --bits 16 \
+  --members 2 \
+  --probes 1 \
+  --semantic-router \
+  --router-teacher-tokens 128 \
+  --semantic-loss-weight 1.0 \
+  --global-slots 4 \
+  --seed 0 \
+  --output runs/mlx-semantic-global-smoke-seed0.safetensors
+```
+
+This is a mechanism smoke test, not a valid comparative result. A reported ablation
+must compare semantic-router-only, global-only, combined, and unchanged baseline runs
+over at least three seeds with the same curriculum and selected-token budget. See the
+[replication roadmap](replication-roadmap.md#stage-a-router-and-global-path-ablations).
+
+## Pretrained donor-router distillation
+
+The first natural-language routing experiment downloads the approximately 257 MB BF16
+SmolLM2-135M base checkpoint on first use. It freezes the donor, caches layer-15 hidden
+states and distant attention distributions, and trains only the hash projections:
+
+```bash
+python3 mlx_donor_router.py \
+  --model HuggingFaceTB/SmolLM2-135M \
+  --layer 15 \
+  --seq-len 256 \
+  --stride 128 \
+  --window 32 \
+  --sink-tokens 4 \
+  --train-segments 32 \
+  --eval-segments 4 \
+  --tables 8 \
+  --bits 8 \
+  --members 4 \
+  --probes 1 \
+  --steps 2000 \
+  --alignment-weight 1.0 \
+  --balance-weight 10 \
+  --seed 0 \
+  --output runs/smollm2-layer15-router-seed0.safetensors
+```
+
+Repeat with seeds 1 and 2. The JSON beside each checkpoint records corpus files, donor
+configuration, and before/after hard and continuous metrics. Generated weights and
+metadata under `runs/` remain ignored by Git.
+
+The hard metrics use bucket lookup with `min_distance=window`, so local-window tokens
+cannot consume the distant sparse budget. Continuous top-k is reported only as a
+diagnostic ceiling and must not be confused with subquadratic hash lookup.
+
 ## Length extrapolation
 
 ```bash

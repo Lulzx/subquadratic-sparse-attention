@@ -19,8 +19,9 @@ This directory is the technical record for the subquadratic sparse-attention pro
 ### Audit the relationship to SubQ
 
 1. [Model-card claim audit](model-card-audit.md)
-2. [Architecture](architecture.md#what-is-and-is-not-being-replicated)
-3. [Limitations](limitations.md#relationship-to-subq)
+2. [Replication ledger and roadmap](replication-roadmap.md)
+3. [Architecture](architecture.md#what-is-and-is-not-being-replicated)
+4. [Limitations](limitations.md#relationship-to-subq)
 
 ## Document map
 
@@ -30,6 +31,7 @@ This directory is the technical record for the subquadratic sparse-attention pro
 | [`mlx-implementation.md`](mlx-implementation.md) | Maps the design to MLX code and explains the differentiation boundary. |
 | [`experiments.md`](experiments.md) | Records hardware, versions, protocols, measurements, and conclusions. |
 | [`model-card-audit.md`](model-card-audit.md) | Separates reproducible arithmetic from inaccessible empirical claims. |
+| [`replication-roadmap.md`](replication-roadmap.md) | Tracks claim status, recent research, and the staged Mac-local replication plan. |
 | [`reproduction.md`](reproduction.md) | Provides clean-environment commands and expected outputs. |
 | [`memory-safety.md`](memory-safety.md) | Explains default limits and how to avoid unsafe dense allocations. |
 | [`design-history.md`](design-history.md) | Records why the original product-codebook router was rejected. |

@@ -27,6 +27,10 @@ def main():
         window=config["window"],
         tables=config.get("tables", 4), bits=config.get("bits", 16),
         members=config.get("members", 4), probes=config.get("probes", 1),
+        semantic_router=config.get("semantic_router", False),
+        global_slots=config.get("global_slots", 0),
+        router_teacher_tokens=config.get("router_teacher_tokens", 256),
+        semantic_loss_weight=config.get("semantic_loss_weight", 1.0),
     )
     model.load_weights(args.checkpoint)
     for length in map(int, args.lengths.split(",")):

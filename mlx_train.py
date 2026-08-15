@@ -60,6 +60,22 @@ def main():
         "--probes", type=int, default=1,
         help="codes per table: exact code plus lowest-margin one-bit neighbors",
     )
+    parser.add_argument(
+        "--semantic-router", action="store_true",
+        help="use separate teacher-distilled query/key hash projections",
+    )
+    parser.add_argument(
+        "--global-slots", type=int, default=0,
+        help="fixed number of causal compressed-history slots; zero disables the path",
+    )
+    parser.add_argument(
+        "--router-teacher-tokens", type=int, default=256,
+        help="maximum prefix length used by the dense router-distillation objective",
+    )
+    parser.add_argument(
+        "--semantic-loss-weight", type=float, default=1.0,
+        help="semantic KL weight inside the router auxiliary loss",
+    )
     parser.add_argument("--lr", type=float, default=1e-3)
     parser.add_argument("--aux-weight", type=float, default=0.1)
     parser.add_argument("--log-every", type=int, default=100)
@@ -76,12 +92,17 @@ def main():
         parser.error("--steps must be at least the number of curriculum lengths")
     if args.probes < 1 or args.probes > args.bits + 1:
         parser.error("--probes must be between 1 and --bits + 1")
+    if args.global_slots < 0:
+        parser.error("--global-slots must be non-negative")
     mx.random.seed(args.seed)
     rng = np.random.default_rng(args.seed)
     model = MLXTinyLM(
         vocab=VOCAB, width=args.width, layers=args.layers,
         heads=args.heads, window=args.window,
         tables=args.tables, bits=args.bits, members=args.members, probes=args.probes,
+        semantic_router=args.semantic_router, global_slots=args.global_slots,
+        router_teacher_tokens=args.router_teacher_tokens,
+        semantic_loss_weight=args.semantic_loss_weight,
     )
     if args.resume:
         resume_path = pathlib.Path(args.resume)

@@ -52,6 +52,17 @@ An exploratory seed-0 checkpoint trained through 4K and then fine-tuned for 300 
 > [!IMPORTANT]
 > These are synthetic multi-query associative-recall results from a tiny experimental model. They are not general language-model, RULER, GPQA, or production-serving results.
 
+### Natural-language donor-router milestone
+
+A separate MLX experiment now freezes SmolLM2-135M and distills its layer-15 distant
+attention distribution into eight learned binary hash tables. Across three seeds and
+876 held-out queries per seed, hard lookup raises retained teacher-attention mass from
+27.32% to 33.36% and teacher top-1 recall from 37.14% to 55.78%, while the mean number
+of unique candidates falls from 16.95 to 11.70. This is natural-language evidence for
+the selector only; no donor attention layer has been replaced yet. See the
+[replication ledger and roadmap](docs/replication-roadmap.md) for the full protocol and
+the remaining gap to end-to-end replication.
+
 ## Architecture
 
 ```mermaid
@@ -142,6 +153,7 @@ All benchmark commands have conservative default context limits. See [memory saf
 | [MLX implementation](docs/mlx-implementation.md) | Kernels, chunking, autograd boundary, and module structure |
 | [Experiments and results](docs/experiments.md) | Exact protocols, tables, environment, and interpretation |
 | [Model-card claim audit](docs/model-card-audit.md) | What the SubQ report's public arithmetic supports and what cannot be reproduced |
+| [Replication ledger and roadmap](docs/replication-roadmap.md) | Claim status, recent research, donor plan, and Mac-local milestones |
 | [Reproduction guide](docs/reproduction.md) | Installation and every safe command |
 | [Memory safety](docs/memory-safety.md) | Guardrails added after an unsafe dense allocation |
 | [Design history](docs/design-history.md) | Failed fixed-bucket design and the LSH pivot |
@@ -158,6 +170,7 @@ ssa/
   tasks.py              # deterministic MQAR data generator
 mlx_train.py            # MLX training entrypoint
 mlx_evaluate.py         # held-out and length-extrapolation evaluation
+mlx_donor_router.py     # frozen-LM attention distillation into binary hash routing
 mlx_selector.py         # selector benchmark
 mlx_attention_bench.py  # selected-attention benchmark
 replicate.py            # arithmetic audit of public model-card tables

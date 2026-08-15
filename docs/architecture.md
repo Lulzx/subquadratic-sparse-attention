@@ -8,12 +8,18 @@ The architecture targets three properties:
 2. selection that does not compute all query–key scores;
 3. a fixed attention-read budget that works in causal prefill and autoregressive decoding.
 
-It combines two paths:
+The measured baseline combines two paths:
 
 - a causal sliding window for local syntax and short-range composition;
 - a content-routed selected-attention path for distant retrieval.
 
 Learned per-head gates mix the two outputs before the final projection.
+
+An opt-in research variant adds a third path: a fixed number of compressed causal
+history slots. Tokens are assigned to interleaved slots, each slot keeps the prefix
+mean of its keys and values, and every query attends to the slot states available
+strictly before it. With a fixed slot count this path has linear work and memory. It is
+a first coarse-global control, not an implementation of SubQ or COBS.
 
 ## Multi-table SimHash selector
 
@@ -88,6 +94,17 @@ Hard hash lookup is discrete. Gradients are explicitly stopped through sort and 
 - **confidence** discourages projections from remaining near the sign boundary.
 
 Q/K/V projections and all gathered values receive ordinary task gradients. A future semantic-routing objective should train hash agreement directly from teacher attention or retrieval labels.
+
+With `semantic_router=True`, half of the configured tables remain shared-hash fallback
+tables and half own separate query and key hash projections. The total table count and
+selected-token budget remain fixed. The auxiliary loss retains balance and confidence
+terms and adds a bounded dense-teacher cross-entropy objective: continuous query/key
+hash similarity is trained to approximate the attention distribution produced by the
+layer's Q/K projections. Only the first configured `router_teacher_tokens` participate,
+which keeps the quadratic teacher temporary bounded at longer training lengths. Hard
+bucket indices remain stop-gradient. This hybrid fallback is necessary because an
+initial all-semantic router lost exact MQAR reachability as soon as its Q/K hashes
+diverged.
 
 ## Complexity
 

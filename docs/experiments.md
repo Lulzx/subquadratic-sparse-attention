@@ -168,3 +168,81 @@ Both rows use seed 0 and evaluate 2,864 answers per length. The stagewise run in
 The initial PyTorch/MPS language-model curriculum did not learn general associative retrieval in the tested configurations, although it could overfit a fixed batch to 100%. This was useful evidence that optimization worked but the setup was not producing a general circuit.
 
 The MLX model differs in implementation details, including an untied output projection, so its success should not be attributed solely to the runtime. The runtime did make iteration substantially faster and enabled the current memory-bounded implementation.
+## Semantic-router and compressed-global seed-0 probe
+
+This 2026-08-15 experiment is exploratory and single-seed. It tests whether two ideas
+from the replication roadmap can be trained without changing the selected-token budget.
+
+Protocol:
+
+- Apple M4 Pro with 24 GB unified memory;
+- width 64, two layers, four heads, window 32;
+- eight total tables, 16 bits, two members, one probe, `K=32`;
+- 300 steps at length 128, batch 16, seed 0;
+- 16 held-out batches at length 128;
+- eight batch-1 held-out batches at 2K and 4K.
+
+| Variant | 128 | 2K | 4K |
+|---|---:|---:|---:|
+| Baseline | 99.84% | 97.47% | **80.73%** |
+| Four compressed global slots | **100.00%** | 96.21% | 79.68% |
+| Hybrid semantic router | 99.61% | 94.80% | 80.03% |
+| Hybrid semantic router + four global slots | 99.77% | 94.38% | 77.93% |
+
+The original all-semantic selector replaced every shared hash table with separate Q/K
+hashes. It collapsed to 0.16% held-out accuracy at length 128. Semantic loss weights
+of 0.1, 0.05, and 0.01 also remained at or below 0.23%. A fixed-budget hybrid that
+retains four shared fallback tables restored learning, but neither it nor the global
+summary path improved extrapolation in this seed.
+
+This is evidence against the immediate mechanisms, not against semantic routing or
+global compression generally. Exact MQAR rewards identical token hashes, the from-scratch
+sparse Q/K projections are not a trained dense teacher, and slot means blend mostly
+filler at long lengths. The next semantic experiment must use a pretrained dense donor
+or explicit query-to-source labels; the next compressed path should learn block
+summaries instead of using fixed means.
+
+## SmolLM2 natural-language donor-router distillation
+
+This 2026-08-15 experiment uses the frozen BF16
+[SmolLM2-135M base model](https://huggingface.co/HuggingFaceTB/SmolLM2-135M) as a real
+dense-attention teacher. It trains only a standalone hash router and does not replace
+the donor's attention layer or measure language-model output quality.
+
+Protocol:
+
+- donor layer 15 of 30;
+- 256-token sequences from repository prose;
+- 32 training segments and four held-out segments from disjoint documentation files;
+- first four key positions excluded as attention sinks;
+- local 32-token window excluded from the routing target;
+- eight tables, eight bits, four members, one probe, maximum hard budget 32;
+- straight-through binary codes, 2,000 optimizer steps;
+- seeds 0, 1, and 2;
+- 876 held-out distant queries per seed.
+
+| Metric | Seed 0 before / after | Seed 1 before / after | Seed 2 before / after | Mean before / after |
+|---|---:|---:|---:|---:|
+| Hard retained teacher mass | 29.65 / 33.16% | 26.81 / 33.54% | 25.51 / 33.38% | **27.32 / 33.36%** |
+| Hard teacher top-1 recall | 40.07 / 57.42% | 36.19 / 54.45% | 35.16 / 55.48% | **37.14 / 55.78%** |
+| Mean unique hard candidates | 17.48 / 11.53 | 16.90 / 12.05 | 16.47 / 11.52 | **16.95 / 11.70** |
+| Continuous top-32 mass | 41.04 / 68.18% | 47.30 / 67.66% | 39.12 / 68.92% | **42.48 / 68.25%** |
+| Continuous top-32 top-1 recall | 41.89 / 88.70% | 54.79 / 83.68% | 36.42 / 84.36% | **44.37 / 85.58%** |
+
+Two failed intermediate designs were necessary to make the measurement honest:
+
+1. Including the first tokens produced 100% top-1 recall with one candidate because
+   the router learned an attention sink. Sink exclusion yields 143 distinct teacher
+   top-1 positions in the held-out set, with the most common only 4.22% of queries.
+2. Looking up the most recent bucket members and discarding local tokens afterward
+   allowed local collisions to consume the sparse budget. `min_distance=window` now
+   seeks directly before the local cutoff.
+
+The hard router improves all three seeds despite returning fewer unique candidates.
+However, it retains only about half the mass available to its own continuous top-32
+scores. The next router experiment should focus on quantization/indexing fidelity:
+learned multi-probe policies, smaller independently calibrated code groups, or a
+two-stage hash-plus-rerank selector. It should not increase the hard budget silently.
+
+This is partial natural-language evidence for learned content routing. It is not yet
+evidence for language-model quality, subquadratic end-to-end execution, RULER, or NIAH.

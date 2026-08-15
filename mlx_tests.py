@@ -3,11 +3,14 @@ import pathlib
 import tempfile
 
 import mlx.core as mx
+import mlx.nn as nn
+import mlx.optimizers as optim
 import numpy as np
 
 from mlx_train import curriculum_length, scaled_batch_size
 from ssa.mlx_attention import random_weights, sparse_attention, sparse_attention_chunked
-from ssa.mlx_selector import probe_codes, select_indices
+from ssa.mlx_model import MLXSSAAttention, causal_slot_attention
+from ssa.mlx_selector import probe_codes, select_indices, select_indices_qk
 
 
 def numpy_rope(x, positions, base=50000.0):
@@ -113,6 +116,71 @@ def test_multiprobe_causality():
     print("PASS multiprobe selector causality under future mutation")
 
 
+def test_semantic_selector_parity_and_causality():
+    rng = np.random.default_rng(11)
+    x_np = rng.standard_normal((2, 32, 8), dtype=np.float32)
+    projection = mx.array(rng.standard_normal((8, 12), dtype=np.float32))
+    shared = select_indices(
+        mx.array(x_np), projection, tables=3, bits=4, members=2, probes=1
+    )
+    separate = select_indices_qk(
+        mx.array(x_np), mx.array(x_np), projection, projection,
+        tables=3, bits=4, members=2, probes=1,
+    )
+    changed = x_np.copy()
+    changed[:, 20:] = rng.standard_normal((2, 12, 8), dtype=np.float32)
+    after = select_indices_qk(
+        mx.array(changed), mx.array(changed), projection, projection,
+        tables=3, bits=4, members=2, probes=1,
+    )
+    mx.eval(shared, separate, after)
+    np.testing.assert_array_equal(np.array(shared), np.array(separate))
+    np.testing.assert_array_equal(np.array(separate)[:, :20], np.array(after)[:, :20])
+    distant = select_indices_qk(
+        mx.array(x_np), mx.array(x_np), projection, projection,
+        tables=3, bits=4, members=2, probes=1, block=False, min_distance=4,
+    )
+    mx.eval(distant)
+    positions = np.arange(32).reshape(1, 32, 1)
+    valid = np.array(distant) >= 0
+    assert np.all(np.array(distant)[valid] < np.broadcast_to(positions - 4, distant.shape)[valid])
+    print("PASS separate Q/K selector parity and causality")
+
+
+def test_causal_global_slots():
+    rng = np.random.default_rng(13)
+    q = rng.standard_normal((1, 24, 2, 4), dtype=np.float32)
+    k = rng.standard_normal((1, 24, 2, 4), dtype=np.float32)
+    v = rng.standard_normal((1, 24, 2, 4), dtype=np.float32)
+    before = causal_slot_attention(mx.array(q), mx.array(k), mx.array(v), slots=4)
+    q[:, 16:] = rng.standard_normal((1, 8, 2, 4), dtype=np.float32)
+    k[:, 16:] = rng.standard_normal((1, 8, 2, 4), dtype=np.float32)
+    v[:, 16:] = rng.standard_normal((1, 8, 2, 4), dtype=np.float32)
+    after = causal_slot_attention(mx.array(q), mx.array(k), mx.array(v), slots=4)
+    mx.eval(before, after)
+    np.testing.assert_allclose(np.array(before)[:, :16], np.array(after)[:, :16], atol=0, rtol=0)
+    assert np.isfinite(np.array(before)).all()
+    print("PASS compressed global slots are finite and causal")
+
+
+def test_semantic_router_gradient():
+    mx.random.seed(17)
+    attention = MLXSSAAttention(
+        width=16, heads=2, tables=2, bits=4, members=1,
+        semantic_router=True, global_slots=2, router_teacher_tokens=16,
+    )
+    x = mx.random.normal((2, 16, 16))
+    before = np.array(attention.query_hash_projection)
+    loss_and_grad = nn.value_and_grad(attention, lambda model, inputs: model.router_loss(inputs))
+    loss, gradients = loss_and_grad(attention, x)
+    optimizer = optim.SGD(learning_rate=1e-2)
+    optimizer.update(attention, gradients)
+    mx.eval(loss, attention.parameters(), optimizer.state)
+    assert math.isfinite(float(loss))
+    assert not np.array_equal(before, np.array(attention.query_hash_projection))
+    print("PASS semantic router loss is finite and updates hash projections")
+
+
 def test_weight_resume():
     from ssa.mlx_model import MLXTinyLM
 
@@ -136,4 +204,7 @@ if __name__ == "__main__":
     test_multiprobe_neighbor()
     test_length_curriculum()
     test_multiprobe_causality()
+    test_semantic_selector_parity_and_causality()
+    test_causal_global_slots()
+    test_semantic_router_gradient()
     test_weight_resume()
