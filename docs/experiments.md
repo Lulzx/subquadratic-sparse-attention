@@ -418,23 +418,29 @@ instruction cases that the small dense donor answers are preserved.
 `mlx_lfm_retrieval_router.py` provides direct supervision for the distant source token
 needed at each answer-generation step. It changes only each replacement's query/key
 hash projections, streams one prompt through the model at a time, and never caches the
-hidden-state corpus. On seed 0, 300 steps per layer raise sampled hard source-token
-recall from 8.33% to 85.42% at layer 12 and from 12.50% to 91.67% at layer 14. Peak MLX
-memory is 1.24 GB.
+hidden-state corpus. Across three seeds, 300 steps per layer raise mean sampled hard
+source-token recall from 11.81% to 95.14% at layer 12 and from 11.81% to 86.81% at
+layer 14. Peak MLX memory is 1.24–1.25 GB.
 
-On unseen values, the resulting seed-0 checkpoint preserves 19 of 26 dense-pass cases
-(73.08%):
+On unseen values, the resulting checkpoints preserve:
 
-| Retrieval form | Dense passes | Sparse preserves | Preservation |
-|---|---:|---:|---:|
-| Exact passkey | 9 | **9** | **100%** |
-| Lexical mismatch | 8 | **8** | **100%** |
-| 13-token variable value | 9 | **2** | 22.22% |
-| **All** | **26** | **19** | **73.08%** |
+| Seed | Exact | Dense-pass lexical | 13-token variable | All dense-pass cases |
+|---:|---:|---:|---:|---:|
+| 0 | **9/9** | **8/8** | 2/9 | 19/26 |
+| 1 | **9/9** | **8/8** | 4/9 | 21/26 |
+| 2 | **9/9** | **8/8** | 0/9 | 17/26 |
+| **Total** | **27/27** | **24/24** | **6/27** | **57/78** |
 
-The same checkpoint's 65,536-token paired quality ratios are 1.0004 on WikiText
-(95% CI 0.9751–1.0269) and 0.9024 on PG-19 (0.8738–0.9325). One-token successor
-expansion improves the variable case only to 3/9 and changes the attention distribution,
-so it is not accepted as a fix. A broader six-value router curriculum also regresses
-overall preservation to 69.23%; v1 remains the accepted seed-0 checkpoint. More seeds
-and stronger variable-span retrieval are required before this gate passes.
+The 65,536-token paired quality audit remains close to or better than dense:
+
+| Corpus | Seed 0 ratio (95% CI) | Seed 1 ratio (95% CI) | Seed 2 ratio (95% CI) | Geometric mean |
+|---|---:|---:|---:|---:|
+| WikiText-2 test | 1.0004 (0.9751–1.0269) | 1.0141 (0.9877–1.0422) | 1.0128 (0.9861–1.0414) | **1.0091** |
+| PG-19 validation | 0.9024 (0.8738–0.9325) | 0.9043 (0.8741–0.9353) | 0.8902 (0.8618–0.9200) | **0.8990** |
+
+Every point estimate remains within the 2% WikiText gate, but the intervals for seeds
+1 and 2 extend beyond it; the data do not resolve a small WikiText regression. One-token
+successor expansion improves seed-0 variable retrieval only to 3/9 and changes the
+attention distribution, so it is not accepted as a fix. A broader six-value seed-0
+router curriculum also regresses overall preservation to 69.23%. Stronger variable-
+span retrieval is required before the behavior gate passes.

@@ -35,7 +35,7 @@ The measured baseline combines causal sliding-window attention with content-addr
 | MQAR accuracy at 16K after an 8K fine-tuning stage | **97.38%** |
 | LFM2.5 one-layer sparse replacement perplexity penalty | **+1.64% mean** |
 | LFM2.5 two-layer model after KL recovery, 65K-token audit | **0.9675× WikiText / 0.8712× PG-19** |
-| LFM2.5 seed-0 retrieval preservation after router supervision | **19 / 26 dense-pass cases** |
+| LFM2.5 three-seed retrieval preservation after router supervision | **57 / 78 dense-pass cases** |
 
 The model was trained at 128 tokens and evaluated without further training:
 
@@ -72,10 +72,11 @@ the remaining gap to end-to-end replication.
 A new paired behavior gate exposes what perplexity misses. Before retrieval-specific
 router training, the sparse two-layer model preserves only 3 of 26 natural-language
 retrieval cases that dense LFM2.5 answers. Streaming supervision of the router's source
-positions raises seed-0 preservation to 19 of 26 while keeping the large WikiText ratio
-at 1.0004 and PG-19 at 0.9024. Exact passkeys and lexical-mismatch cases pass at all
-tested 256–1,024-token lengths and positions; long multi-token values remain the clear
-failure. This result is seed 0 and is not yet a replicated benchmark claim.
+positions raises three-seed preservation to 19/26, 21/26, and 17/26. Exact passkeys
+are 27/27 and dense-pass lexical-mismatch cases are 24/24 across seeds at every tested
+256–1,024-token length and position. Long multi-token values remain the clear failure
+at 6/27. The corresponding large-audit geometric means are 1.0091× dense perplexity
+on WikiText and 0.8990× on PG-19.
 
 The active donor pair is now current-generation Liquid AI: the causal
 [LFM2.5-350M](https://huggingface.co/LiquidAI/LFM2.5-350M) supplies language-model

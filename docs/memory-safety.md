@@ -35,7 +35,7 @@ Larger requested lengths are skipped with an explicit message instead of being a
 
 `mx.set_memory_limit` configures MLX's working-set scheduler; it is not a strict process
 kill-switch. Always report `mx.get_peak_memory()` as the actual measurement. The
-reference retrieval-router run uses a 1,400 MB configured limit and peaks at 1.24 GB;
+reference retrieval-router runs use a 1,400 MB configured limit and peak at 1.24–1.27 GB;
 the 1,024-token behavior matrix peaks near 1.60 GB.
 
 ## Recommended long-context settings

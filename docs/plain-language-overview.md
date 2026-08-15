@@ -52,9 +52,10 @@ activations are cached once and reused. The current one-layer conversion peaks n
   Every confidence interval passes the 2% gate, at 1.61 GB peak MLX memory.
 - Added a generation test that catches failures perplexity cannot see. The recovered
   sparse model initially keeps only 3 of 26 retrieval answers that dense LFM2.5 gets
-  right. Directly teaching the hash router which source token is needed raises seed 0
-  to 19 of 26, including every exact and paraphrased-name case through 1,024 tokens.
-  Long multi-token values remain weak at 2 of 9 and are the next retrieval target.
+  right. Directly teaching the hash router which source token is needed raises three
+  seeds to 19, 21, and 17 of 26. Every exact and paraphrased-name case passes through
+  1,024 tokens across all seeds. Long multi-token values remain weak at 6 of 27 and
+  are the next retrieval target.
 
 ## What this does not prove yet
 

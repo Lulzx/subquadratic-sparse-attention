@@ -25,14 +25,7 @@ from mlx_lfm_quality_eval import install_replacements
 TRAIN_VALUES = {
     "exact": ("KILO-1042", "RAVEN-6835"),
     "lexical": ("FROST-2941", "AMBER-5076"),
-    "variable": (
-        "SOUTH-CEDAR-2468-MOON",
-        "WEST-IRON-1357-CLOUD",
-        "EAST-RIVER-8642-STONE",
-        "RED-OAK-9753-STAR",
-        "SILVER-FIELD-4206-DAWN",
-        "LOWER-PINE-3197-FLAME",
-    ),
+    "variable": ("SOUTH-CEDAR-2468-MOON", "WEST-IRON-1357-CLOUD"),
 }
 
 
@@ -212,8 +205,6 @@ def main():
     targets, base_cases, skipped_local = training_targets(
         tokenizer, lengths, positions, args.window
     )
-    permutation = np.random.default_rng(args.seed).permutation(len(targets))
-    targets = [targets[index] for index in permutation]
 
     results = {}
     for layer, replacement in replacements.items():
