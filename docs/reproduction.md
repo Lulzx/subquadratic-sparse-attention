@@ -387,6 +387,20 @@ python3 mlx_attention_bench.py
 
 Both commands default to a maximum of 16K. Do not override the cap without reading [memory safety](memory-safety.md).
 
+## Idealized hash-capacity calculation
+
+Run the constant-memory mathematical baseline:
+
+```bash
+python3 capacity_scaling.py --self-test
+python3 capacity_scaling.py --lengths 1024,4096,16384,65536,1048576
+```
+
+This calculates collision-tail survival under balanced, independent hashes. It does
+not load MLX or any model weights and is an optimistic capacity baseline, not measured
+learned-router recall. See [Complexity and capacity](complexity-and-capacity.md) for the
+assumptions and formula.
+
 ## Model-card arithmetic
 
 ```bash

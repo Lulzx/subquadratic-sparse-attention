@@ -139,6 +139,12 @@ Let sequence length be `n`, model width `d`, tables `T`, probes `p`, bits `b`, s
 
 With fixed `T`, `p`, `b`, `m`, `K`, and `W`, the intended hash-table design is linear in `n`. The current cross-platform prefill selector is subquadratic but not strictly linear because it uses sorting.
 
+The optional semantic-router loss does form dense teacher and student score matrices,
+but only over `r = min(n, router_teacher_tokens)` training positions. Its `O(r^2)` work
+is bounded by the configured cap and is absent from inference. See
+[Complexity and capacity](complexity-and-capacity.md) for the full proof, path-specific
+candidate budgets, causal argument, memory bound, and unresolved recall-scaling problem.
+
 ## What is and is not being replicated
 
 The public SubQ report states behavioral requirements and benchmark results but does not disclose its SSA mechanism. This repository independently implements those requirements using learned SimHash routing. No claim is made that SubQ uses hashing, block reads, these gates, or any code in this repository.

@@ -107,6 +107,11 @@ flowchart LR
 
 The selector computes hashes directly instead of scoring every query against every key. Portable prefill sorts hash codes in `O(n log n)`; an append-only hash-table implementation has expected `O(n)` construction and constant expected lookup. Attention reads a fixed `K=32`, so its selected-attention work is linear in sequence length.
 
+This proves a layer-level compute bound, not unlimited fixed-budget recall: as contexts
+grow, collision capacity may also need to grow. The precise theorem, causal proof,
+bounded quadratic training-teacher caveat, and address-capacity question are documented
+in [Complexity and capacity](docs/complexity-and-capacity.md).
+
 [Read the architecture rationale →](docs/architecture.md)
 
 ## Quick start
@@ -175,6 +180,7 @@ All benchmark commands have conservative default context limits. See [memory saf
 |---|---|
 | [Documentation index](docs/index.md) | Reading paths and project map |
 | [Architecture](docs/architecture.md) | Hash routing, causal lookup, block reads, gates, and complexity |
+| [Complexity and capacity](docs/complexity-and-capacity.md) | Subquadratic proof, causal proof, training caveat, and recall-scaling question |
 | [MLX implementation](docs/mlx-implementation.md) | Kernels, chunking, autograd boundary, and module structure |
 | [Experiments and results](docs/experiments.md) | Exact protocols, tables, environment, and interpretation |
 | [Model-card claim audit](docs/model-card-audit.md) | What the SubQ report's public arithmetic supports and what cannot be reproduced |
@@ -207,6 +213,7 @@ mlx_lfm_retrieval_recovery.py # low-memory experimental retrieval KL/SFT
 lfm_embedding_router.py # LFM2.5 semantic block embeddings into multiprobe hashes
 mlx_selector.py         # selector benchmark
 mlx_attention_bench.py  # selected-attention benchmark
+capacity_scaling.py     # constant-memory idealized hash-capacity calculator
 replicate.py            # arithmetic audit of public model-card tables
 docs/                   # complete technical record
 ```

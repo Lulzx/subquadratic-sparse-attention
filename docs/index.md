@@ -7,8 +7,9 @@ This directory is the technical record for the subquadratic sparse-attention pro
 ### Understand the idea
 
 1. [Architecture](architecture.md)
-2. [Design history](design-history.md)
-3. [Limitations](limitations.md)
+2. [Complexity and capacity](complexity-and-capacity.md)
+3. [Design history](design-history.md)
+4. [Limitations](limitations.md)
 
 ### Reproduce the results
 
@@ -28,6 +29,7 @@ This directory is the technical record for the subquadratic sparse-attention pro
 | File | Purpose |
 |---|---|
 | [`architecture.md`](architecture.md) | Defines the selector, attention layer, causal rules, and complexity model. |
+| [`complexity-and-capacity.md`](complexity-and-capacity.md) | Proves the portable subquadratic bound and separates it from recall scaling. |
 | [`mlx-implementation.md`](mlx-implementation.md) | Maps the design to MLX code and explains the differentiation boundary. |
 | [`experiments.md`](experiments.md) | Records hardware, versions, protocols, measurements, and conclusions. |
 | [`model-card-audit.md`](model-card-audit.md) | Separates reproducible arithmetic from inaccessible empirical claims. |
