@@ -78,6 +78,8 @@ def install_replacements(body, config, args, layers):
             body.layers[layer_index].self_attn, router,
             args.window, args.sink_tokens, args.members, args.probes,
             replacement_alpha=0.0,
+            member_policy=getattr(args, "member_policy", "recent"),
+            history_fraction=getattr(args, "history_fraction", 0.5),
         )
         replacement.load_weights(str(checkpoint))
         replacement.replacement_alpha = 0.0
@@ -106,6 +108,10 @@ def main():
     parser.add_argument("--bits", type=int, default=8)
     parser.add_argument("--members", type=int, default=4)
     parser.add_argument("--probes", type=int, default=1)
+    parser.add_argument(
+        "--member-policy", choices=("recent", "hybrid"), default="recent"
+    )
+    parser.add_argument("--history-fraction", type=float, default=0.5)
     parser.add_argument("--span-size", type=int, default=1)
     parser.add_argument("--block-size", type=int, default=0)
     parser.add_argument("--seed", type=int, default=0)

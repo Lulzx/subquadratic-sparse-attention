@@ -33,6 +33,10 @@ def main():
     parser.add_argument("--bits", type=int, default=8)
     parser.add_argument("--members", type=int, default=4)
     parser.add_argument("--probes", type=int, default=1)
+    parser.add_argument(
+        "--member-policy", choices=("recent", "hybrid"), default="recent"
+    )
+    parser.add_argument("--history-fraction", type=float, default=0.5)
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--output", default="")
     args = parser.parse_args()
@@ -74,6 +78,8 @@ def main():
             body.layers[layer_index].self_attn, router,
             args.window, args.sink_tokens, args.members, args.probes,
             replacement_alpha=0.0,
+            member_policy=args.member_policy,
+            history_fraction=args.history_fraction,
         )
         replacement.load_weights(str(checkpoint))
         replacement.replacement_alpha = 0.0

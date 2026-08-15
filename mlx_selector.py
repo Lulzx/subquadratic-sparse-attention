@@ -40,6 +40,11 @@ def main():
     parser.add_argument("--bits", type=int, default=16)
     parser.add_argument("--members", type=int, default=4)
     parser.add_argument("--probes", type=int, default=1)
+    parser.add_argument(
+        "--member-policy", choices=("recent", "hybrid"), default="recent"
+    )
+    parser.add_argument("--history-fraction", type=float, default=0.5)
+    parser.add_argument("--anchors-only", action="store_true")
     parser.add_argument("--needles", type=int, default=100)
     parser.add_argument("--repeats", type=int, default=5)
     parser.add_argument("--seed", type=int, default=1)
@@ -59,6 +64,9 @@ def main():
             x, projection, args.repeats,
             tables=args.tables, bits=args.bits, members=args.members,
             probes=args.probes,
+            member_policy=args.member_policy,
+            history_fraction=args.history_fraction,
+            block=not args.anchors_only,
         )
         selected_np = np.array(selected)[0, queries]
         hits = sum(
@@ -70,6 +78,8 @@ def main():
             "milliseconds": round(ms, 3),
             "recall": hits / len(stored),
             "selected_per_query": int(selected.shape[-1]),
+            "member_policy": args.member_policy,
+            "history_fraction": args.history_fraction,
             "active_memory_mb": round(mx.get_active_memory() / 2**20, 2),
             "peak_memory_mb": round(mx.get_peak_memory() / 2**20, 2),
         }), flush=True)

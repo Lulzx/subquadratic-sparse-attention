@@ -13,6 +13,7 @@ from mlx_lfm_replacement import GatedLFMReplacement
 from ssa.mlx_attention import random_weights, sparse_attention, sparse_attention_chunked
 from ssa.mlx_model import MLXSSAAttention, causal_slot_attention
 from ssa.mlx_selector import (
+    hash_codes,
     probe_codes,
     select_block_indices_qk,
     select_indices,
@@ -101,6 +102,72 @@ def test_multiprobe_neighbor():
     assert bool(mx.any(multiprobe[0, 2] == 0))
     assert not bool(mx.any(multiprobe[0, 0] > 0)), "future position leaked"
     print("PASS multiprobe retrieves a Hamming-1 causal neighbor")
+
+
+def test_hybrid_bucket_history():
+    x = mx.ones((1, 12, 1))
+    projection = mx.ones((1, 1))
+    recent = np.array(select_indices_qk(
+        x, x, projection, projection,
+        tables=1, bits=1, members=4, probes=1, block=False,
+        member_policy="recent",
+    ))
+    hybrid = np.array(select_indices_qk(
+        x, x, projection, projection,
+        tables=1, bits=1, members=4, probes=1, block=False,
+        member_policy="hybrid",
+    ))
+    assert recent[0, 11].tolist() == [10, 9, 8, 7]
+    assert hybrid[0, 11].tolist() == [10, 9, 8, 5]
+    changed = mx.concatenate([x[:, :8], -mx.ones((1, 4, 1))], axis=1)
+    changed_hybrid = np.array(select_indices_qk(
+        changed, changed, projection, projection,
+        tables=1, bits=1, members=4, probes=1, block=False,
+        member_policy="hybrid",
+    ))
+    np.testing.assert_array_equal(hybrid[:, :8], changed_hybrid[:, :8])
+    print("PASS hybrid bucket retention spans history and remains causal")
+
+
+def test_hybrid_selector_reference():
+    rng = np.random.default_rng(41)
+    batch, length, width, tables, bits = 2, 17, 4, 2, 3
+    query = mx.array(rng.standard_normal((batch, length, width), dtype=np.float32))
+    key = mx.array(rng.standard_normal((batch, length, width), dtype=np.float32))
+    query_projection = mx.array(
+        rng.standard_normal((width, tables * bits), dtype=np.float32)
+    )
+    key_projection = mx.array(
+        rng.standard_normal((width, tables * bits), dtype=np.float32)
+    )
+    actual = select_indices_qk(
+        query, key, query_projection, key_projection,
+        tables=tables, bits=bits, members=4, probes=1, block=False,
+        min_distance=2, member_policy="hybrid", history_fraction=0.5,
+    )
+    query_code = np.array(probe_codes(
+        query, query_projection, tables, bits, probes=1
+    ))[..., 0]
+    key_code = np.array(hash_codes(key, key_projection, tables, bits))
+    expected = np.full((batch, length, tables, 4), -1, dtype=np.int32)
+    for sample in range(batch):
+        for position in range(length):
+            for table in range(tables):
+                matches = [
+                    key_position
+                    for key_position in range(max(position - 2, 0))
+                    if key_code[sample, key_position, table]
+                    == query_code[sample, position, table]
+                ]
+                maximum_offset = len(matches) - 1
+                offsets = [0, 1, 2, max(3, math.floor(maximum_offset * 0.5))]
+                for member, offset in enumerate(offsets):
+                    if offset < len(matches):
+                        expected[sample, position, table, member] = matches[-1 - offset]
+    np.testing.assert_array_equal(
+        np.array(actual).reshape(batch, length, tables, 4), expected
+    )
+    print("PASS hybrid selector matches causal NumPy reference")
 
 
 def test_length_curriculum():
@@ -403,6 +470,8 @@ def test_lfm_replacement_gate_and_causality():
 if __name__ == "__main__":
     test_reference()
     test_multiprobe_neighbor()
+    test_hybrid_bucket_history()
+    test_hybrid_selector_reference()
     test_length_curriculum()
     test_multiprobe_causality()
     test_selector_causality_matrix()

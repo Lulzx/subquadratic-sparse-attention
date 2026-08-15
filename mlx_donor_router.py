@@ -365,7 +365,8 @@ def _distance_metrics(distances, recall, retained_mass, candidates):
     return result
 
 
-def hard_metrics(router, examples, members, probes, window, sink_tokens):
+def hard_metrics(router, examples, members, probes, window, sink_tokens,
+                 member_policy="recent", history_fraction=0.5):
     retained_mass = []
     top_one = []
     candidates = []
@@ -387,7 +388,8 @@ def hard_metrics(router, examples, members, probes, window, sink_tokens):
         selected = select_indices_qk(
             x, x, router.query_projection, router.key_projection,
             tables=router.tables, bits=router.bits, members=members, probes=probes, block=False,
-            min_distance=window,
+            min_distance=window, member_policy=member_policy,
+            history_fraction=history_fraction,
         )
         query_codes = probe_codes(
             x, router.query_projection, router.tables, router.bits, probes

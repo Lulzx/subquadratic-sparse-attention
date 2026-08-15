@@ -204,6 +204,51 @@ also hashes checkpoints, metadata, and evaluation files, requires compatible rou
 configurations, and evaluates every seed on the same held-out segments. Its default
 1,400 MB working-set limit peaked at 838 MB for this three-seed audit.
 
+To reproduce the fixed-budget bucket-history comparison, audit the inference-aligned
+checkpoints once with the default recent tail and once with the opt-in midpoint-history
+slot:
+
+```bash
+python3 mlx_router_audit.py \
+  runs/lfm2.5-layer14-hard-hamming-top32-pos10-seed0.safetensors \
+  runs/lfm2.5-layer14-hard-hamming-top32-pos10-seed1.safetensors \
+  runs/lfm2.5-layer14-hard-hamming-top32-pos10-seed2.safetensors \
+  --eval-segments 4 \
+  --output runs/lfm2.5-layer14-research-aligned-audit.json \
+  --markdown-output runs/lfm2.5-layer14-research-aligned-audit.md
+
+python3 mlx_router_audit.py \
+  runs/lfm2.5-layer14-hard-hamming-top32-pos10-seed0.safetensors \
+  runs/lfm2.5-layer14-hard-hamming-top32-pos10-seed1.safetensors \
+  runs/lfm2.5-layer14-hard-hamming-top32-pos10-seed2.safetensors \
+  --eval-segments 4 \
+  --member-policy hybrid --history-fraction 0.5 \
+  --output runs/lfm2.5-layer14-history-0.5-audit.json \
+  --markdown-output runs/lfm2.5-layer14-history-0.5-audit.md
+```
+
+Compare the two policies in the collision-heavy exact-needle selector benchmark. Both
+commands select exactly 32 anchors per query:
+
+```bash
+python3 mlx_selector.py \
+  --lengths 1024,2048,4096,8192,16384 \
+  --tables 8 --bits 8 --members 4 --probes 1 \
+  --anchors-only --repeats 9 \
+  --member-policy recent
+
+python3 mlx_selector.py \
+  --lengths 1024,2048,4096,8192,16384 \
+  --tables 8 --bits 8 --members 4 --probes 1 \
+  --anchors-only --repeats 9 \
+  --member-policy hybrid --history-fraction 0.5
+```
+
+The same `--member-policy hybrid --history-fraction 0.5` flags are available on the
+LFM replacement, multilayer, recovery, quality, behavior, and retrieval-router
+commands. They affect token-bucket selection only; `--block-size` keeps the existing
+completed-block policy.
+
 ### One-layer LFM2.5 sparse conversion
 
 First produce router checkpoints for seeds 0, 1, and 2 with the causal-donor command

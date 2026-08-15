@@ -308,15 +308,45 @@ falls 22.2%. Retained contribution improves by 32.0%, 29.5%, and 42.0% in the 1�
 65–128, and 129–256 distance bands respectively. Long-distance top-1 recall remains
 6.11%, so bounded-tail eviction is still the dominant unresolved bottleneck.
 
+### Fixed-budget bucket-history retention
+
+A selector-only follow-up changes which four members each table retains without
+changing the eight-table, one-probe, `K=32` budget. The `hybrid` policy keeps the
+three newest eligible matching keys and uses the fourth slot for the key halfway
+through the causal bucket history. `recent` remains the default, and the accepted
+history fraction is 0.5.
+
+The matched audit uses the same three inference-aligned checkpoints and four held-out
+256-token segments per seed (876 distant queries per seed):
+
+| Metric | Recent | Hybrid 0.5 | Delta |
+|---|---:|---:|---:|
+| Retained teacher contribution | 30.97% | **31.91%** | +0.93 points |
+| Teacher top-1 recall | 37.40% | **38.62%** | +1.22 points |
+| Agreement followed by eviction | 42.92% | **41.70%** | -1.22 points |
+| Mean unique candidates | 15.96 | 16.48 | +0.53 |
+
+Retained contribution improves on every seed by 0.84–0.99 points. Top-1 recall also
+improves on every seed. By distance, medium-range recall rises from 27.62% to 30.58%
+and long-range recall from 6.11% to 8.88%. Near-range recall falls from 59.74% to
+58.77%, although near-range retained contribution rises from 40.01% to 40.52%. The
+tradeoff is therefore accepted for the aggregate contribution objective, not as a
+uniform recall improvement.
+
+An exact-needle selector benchmark under deliberately high 8-bit collision pressure
+also keeps exactly 32 slots. Hybrid recall is 37% versus 23% at 4K, 17% versus 0% at
+8K, and 7% versus 0% at 16K. Its 16K peak MLX allocation is 57.02 MB versus 53.27 MB.
+The nine-repeat latency measurements are noisy and do not support a speed claim.
+
 [BinaryPC](https://arxiv.org/abs/2608.04405) independently supports data-aware binary
 codes and a small error-aware safeguard for hard-to-hash tokens. Its global Hamming
 top-k scan is not adopted here because it would reintroduce quadratic query-by-history
-work in the current portable implementation. A fixed-budget causal safeguard remains
-a separate experiment, not part of these results.
+work in the current portable implementation. The hybrid history slot is the adopted
+fixed-budget safeguard; it does not add a global scan or change completed-block mode.
 
-This is a failure attribution and objective ablation for a standalone trained router. It does not replace
-the existing perplexity and behavior gates for converted models. Reproduce it with
-`mlx_router_audit.py` as documented in [Reproduction](reproduction.md).
+These are selector and objective ablations for a standalone trained router. They do
+not replace the existing perplexity and behavior gates for converted models. Reproduce
+them with `mlx_router_audit.py` as documented in [Reproduction](reproduction.md).
 
 The embedding probe used 40 repository-documentation sections for training and 32
 sections from disjoint files for evaluation. A query is a heading and its positive

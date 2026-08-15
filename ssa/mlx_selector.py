@@ -29,18 +29,21 @@ def probe_codes(x, projection, tables, bits, probes=1):
     return mx.concatenate([exact[..., None], neighbors], axis=-1)
 
 
-def select_indices(x, projection, tables=4, bits=16, members=4, probes=1, block=True):
+def select_indices(x, projection, tables=4, bits=16, members=4, probes=1, block=True,
+                   member_policy="recent", history_fraction=0.5):
     # Store each key once under its exact code and multiprobe only the query.
     # Besides matching conventional LSH lookup, the merged query/key index uses
     # position in its sort key, so future tokens cannot displace earlier members.
     return select_indices_qk(
         x, x, projection, projection, tables=tables, bits=bits,
         members=members, probes=probes, block=block,
+        member_policy=member_policy, history_fraction=history_fraction,
     )
 
 
 def select_indices_qk(query, key, query_projection, key_projection, tables=4, bits=16,
-                      members=4, probes=1, block=True, min_distance=0):
+                      members=4, probes=1, block=True, min_distance=0,
+                      member_policy="recent", history_fraction=0.5):
     """Select causal keys with independently trainable query and key hashes.
 
     Query entries are inserted before key entries at the same position in the
@@ -52,6 +55,10 @@ def select_indices_qk(query, key, query_projection, key_projection, tables=4, bi
         raise ValueError("query and key router inputs must have the same shape")
     if min_distance < 0:
         raise ValueError("min_distance must be non-negative")
+    if member_policy not in ("recent", "hybrid"):
+        raise ValueError("member_policy must be 'recent' or 'hybrid'")
+    if history_fraction < 0.0 or history_fraction > 1.0:
+        raise ValueError("history_fraction must be between 0 and 1")
     batch, length, _ = query.shape
     query_codes = probe_codes(query, query_projection, tables, bits, probes)
     key_codes = hash_codes(key, key_projection, tables, bits)
@@ -79,6 +86,32 @@ def select_indices_qk(query, key, query_projection, key_projection, tables=4, bi
     key_order = mx.argsort(key_sort_values)
 
     offsets = mx.arange(members).reshape(1, members)
+    if member_policy == "hybrid" and members > 2:
+        sorted_buckets = key_buckets.reshape(-1)[key_order]
+        bucket_start_mask = mx.concatenate([
+            mx.ones((1,), dtype=mx.bool_),
+            sorted_buckets[1:] != sorted_buckets[:-1],
+        ])
+        bucket_starts = mx.cummax(mx.where(
+            bucket_start_mask,
+            mx.arange(key_entries),
+            mx.zeros((key_entries,), dtype=mx.int32),
+        ))
+        previous_rank = mx.maximum(keys_before - 1, 0)
+        available = mx.maximum(
+            keys_before - bucket_starts[previous_rank], 1
+        ).reshape(-1, 1)
+        recent_members = members - 1
+        recent = mx.arange(recent_members).reshape(1, -1)
+        maximum_offset = available - 1
+        spread = mx.maximum(
+            mx.floor(maximum_offset * history_fraction).astype(mx.int32),
+            recent_members,
+        )
+        offsets = mx.concatenate([
+            mx.broadcast_to(recent, (query_entries, recent_members)),
+            spread,
+        ], axis=1)
     take = keys_before.reshape(-1, 1) - 1 - offsets
     valid = take >= 0
     candidate_entry = key_order[mx.maximum(take, 0)]

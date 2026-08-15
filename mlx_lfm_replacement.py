@@ -34,7 +34,8 @@ class GatedLFMReplacement(nn.Module):
     """Dense-compatible LFM attention wrapper with a sparse replacement branch."""
 
     def __init__(self, dense_attention, router, window, sink_tokens, members, probes,
-                 replacement_alpha=1.0, block_expansion=False):
+                 replacement_alpha=1.0, block_expansion=False,
+                 member_policy="recent", history_fraction=0.5):
         super().__init__()
         self.dense_attention = dense_attention
         self.sparse_attention = copy.deepcopy(dense_attention)
@@ -43,6 +44,8 @@ class GatedLFMReplacement(nn.Module):
         self.sink_tokens = sink_tokens
         self.members = members
         self.probes = probes
+        self.member_policy = member_policy
+        self.history_fraction = history_fraction
         self.block_expansion = block_expansion
         self.span_size = 2 if block_expansion else 1
         self.block_size = 0
@@ -94,6 +97,8 @@ class GatedLFMReplacement(nn.Module):
                 tables=self.router.tables, bits=self.router.bits,
                 members=self.members, probes=self.probes, block=False,
                 min_distance=self.window,
+                member_policy=self.member_policy,
+                history_fraction=self.history_fraction,
             )
         if self.span_size > 1:
             offsets = mx.arange(self.span_size).reshape(1, 1, 1, self.span_size)
@@ -268,6 +273,10 @@ def main():
     parser.add_argument("--bits", type=int, default=8)
     parser.add_argument("--members", type=int, default=4)
     parser.add_argument("--probes", type=int, default=1)
+    parser.add_argument(
+        "--member-policy", choices=("recent", "hybrid"), default="recent"
+    )
+    parser.add_argument("--history-fraction", type=float, default=0.5)
     parser.add_argument("--steps", type=int, default=1000)
     parser.add_argument("--lr", type=float, default=3e-4)
     parser.add_argument("--alignment-dataset", choices=["repo", "wikitext2"], default="wikitext2")
@@ -328,6 +337,8 @@ def main():
     replacement = GatedLFMReplacement(
         layer.self_attn, router, args.window, args.sink_tokens,
         args.members, args.probes, replacement_alpha=1.0,
+        member_policy=args.member_policy,
+        history_fraction=args.history_fraction,
     )
     before = alignment_metrics(replacement, eval_examples, layer)
     baseline_quality = perplexity(model, quality_tokens)

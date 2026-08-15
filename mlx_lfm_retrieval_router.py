@@ -109,6 +109,8 @@ def hard_source_recall(
                 probes=probes,
                 block=False,
                 min_distance=window,
+                member_policy=replacement.member_policy,
+                history_fraction=replacement.history_fraction,
             )
         mx.eval(selected)
         indices = np.array(selected[0, query_position])
@@ -272,6 +274,10 @@ def main():
     parser.add_argument("--bits", type=int, default=8)
     parser.add_argument("--members", type=int, default=4)
     parser.add_argument("--probes", type=int, default=1)
+    parser.add_argument(
+        "--member-policy", choices=("recent", "hybrid"), default="recent"
+    )
+    parser.add_argument("--history-fraction", type=float, default=0.5)
     parser.add_argument("--block-size", type=int, default=0)
     parser.add_argument("--steps", type=int, default=500)
     parser.add_argument("--lr", type=float, default=3e-4)

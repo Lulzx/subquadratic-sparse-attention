@@ -231,6 +231,10 @@ def main():
     parser.add_argument("--eval-segments", type=int, default=0)
     parser.add_argument("--memory-limit-mb", type=int, default=1400)
     parser.add_argument("--cache-limit-mb", type=int, default=128)
+    parser.add_argument(
+        "--member-policy", choices=("recent", "hybrid"), default="recent"
+    )
+    parser.add_argument("--history-fraction", type=float, default=0.5)
     parser.add_argument("--output", default="runs/learned-router-audit.json")
     parser.add_argument("--markdown-output", default="runs/learned-router-audit.md")
     args = parser.parse_args()
@@ -247,6 +251,8 @@ def main():
     )
     if args.eval_segments:
         config["eval_segments"] = args.eval_segments
+    config["member_policy"] = args.member_policy
+    config["history_fraction"] = args.history_fraction
     if config["eval_segments"] < 1:
         parser.error("evaluation requires at least one segment")
 
@@ -293,6 +299,8 @@ def main():
             config["probes"],
             config["window"],
             config["sink_tokens"],
+            args.member_policy,
+            args.history_fraction,
         )
         seed_results.append({
             "seed": metadata.get("seed"),
@@ -307,7 +315,11 @@ def main():
 
     command = " ".join(["python3", pathlib.Path(__file__).name, *sys.argv[1:]])
     report = {
-        "configuration": {field: config.get(field) for field in CONFIG_FIELDS},
+        "configuration": {
+            **{field: config.get(field) for field in CONFIG_FIELDS},
+            "member_policy": args.member_policy,
+            "history_fraction": args.history_fraction,
+        },
         "evaluation_corpus": [
             {"path": str(path), "sha256": sha256(path)} for path in eval_paths
         ],
