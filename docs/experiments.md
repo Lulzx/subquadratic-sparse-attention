@@ -293,3 +293,38 @@ attempt with independent query/key projections collapsed to 6.25% held-out recal
 it overfit the 40-section corpus and was replaced by a shared projection that preserves
 the embedding model's geometry. The useful result is the measured multiprobe tradeoff,
 not a claim that this toy corpus validates semantic generalization.
+
+## LFM2.5 layer-14 sparse replacement
+
+This is the first experiment that performs donor surgery rather than measuring a
+standalone selector. It replaces only full-attention layer 14 of
+[LFM2.5-350M](https://huggingface.co/LiquidAI/LFM2.5-350M). The other five attention
+layers, ten convolution layers, all MLPs and norms, embeddings, and LM head remain
+unchanged. Q/K/V/O and LFM's GQA normalization and RoPE initialize from the donor.
+
+Each seed uses its corresponding eight-table router checkpoint, a 32-token local
+window, four sink tokens, and at most 32 distant candidates. The sparse branch is
+aligned for 1,000 steps at 256 tokens on 32 segments from the
+[WikiText-2 raw](https://huggingface.co/datasets/Salesforce/wikitext) training split.
+Eight validation segments measure layer alignment; 16 disjoint test segments (4,096
+tokens) measure causal-LM loss. The replacement gate is zero-cost epistemically: at
+zero it reproduces donor loss exactly; at one it skips dense attention entirely.
+
+| Metric | Before alignment | After alignment |
+|---|---:|---:|
+| Held-out attention NRMSE | 0.3392 | **0.2757** |
+| Held-out attention cosine | 0.9513 | **0.9592** |
+| Held-out full-layer NRMSE | 0.1870 | **0.1559** |
+| WikiText perplexity | 9,572.69 | **7,692.09** |
+| Perplexity relative to dense donor | +26.49% | **+1.64%** |
+
+The dense donor perplexity is 7,567.67 under this tokenizer/protocol. Absolute
+perplexity is high because this is the instruction-tuned 350M checkpoint evaluated on
+raw WikiText; the controlled within-checkpoint ratio is the relevant measurement.
+Per-seed final ratios are 1.0118, 1.0277, and 1.0098. The zero-gate loss delta is
+exactly 0.0 for every seed. Peak MLX allocator memory is 1.15 GB.
+
+This partially reproduces pretrained-model conversion with small quality loss, but it
+is not total replication: only one of six attention layers is replaced, the test set
+is small, no RULER/NIAH or general capability suite has run, incremental decoding is
+absent, and portable bucket construction still sorts.

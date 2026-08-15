@@ -166,6 +166,27 @@ python3 mlx_donor_router.py \
 Use `--model LiquidAI/LFM2.5-350M-Base` for the base-model ablation. The historical
 SmolLM2 protocol below remains the reproducible three-seed baseline.
 
+### One-layer LFM2.5 sparse conversion
+
+First produce router checkpoints for seeds 0, 1, and 2 with the causal-donor command
+above using the full 200-step protocol. Then align the sparse layer replacement:
+
+```bash
+python3 mlx_lfm_replacement.py \
+  --layer 14 --window 32 --tables 8 --bits 8 --members 4 --probes 1 \
+  --alignment-dataset wikitext2 --train-segments 32 --eval-segments 8 \
+  --quality-dataset wikitext2 --quality-segments 16 \
+  --steps 1000 --lr 1e-5 --seed 0 \
+  --output runs/lfm2.5-layer14-replacement-wikitext-seed0.safetensors
+```
+
+Repeat with seeds 1 and 2. The runner uses disjoint
+[WikiText-2 raw](https://huggingface.co/datasets/Salesforce/wikitext) train,
+validation, and test splits. At replacement gate zero it executes the original dense
+attention and asserts exact loss equality. At gate one it skips the dense branch and
+executes the sparse replacement. The current path evaluates parallel causal prefill;
+incremental sparse decoding remains unimplemented.
+
 ### Historical SmolLM2 baseline
 
 The first natural-language routing experiment downloads the approximately 257 MB BF16

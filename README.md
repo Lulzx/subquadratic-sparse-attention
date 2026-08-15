@@ -33,6 +33,7 @@ The measured baseline combines causal sliding-window attention with content-addr
 | MQAR accuracy at 16× training length | **95.22%** |
 | MQAR mean accuracy at the former 4K frontier | **97.03%** |
 | MQAR accuracy at 16K after an 8K fine-tuning stage | **97.38%** |
+| LFM2.5 one-layer sparse replacement perplexity penalty | **+1.64% mean** |
 
 The model was trained at 128 tokens and evaluated without further training:
 
@@ -58,8 +59,9 @@ A separate MLX experiment now freezes SmolLM2-135M and distills its layer-15 dis
 attention distribution into eight learned binary hash tables. Across three seeds and
 876 held-out queries per seed, hard lookup raises retained teacher-attention mass from
 27.32% to 33.36% and teacher top-1 recall from 37.14% to 55.78%, while the mean number
-of unique candidates falls from 16.95 to 11.70. This is natural-language evidence for
-the selector only; no donor attention layer has been replaced yet. See the
+of unique candidates falls from 16.95 to 11.70. The current LFM2.5 experiment goes one
+step further and replaces attention layer 14: three-seed WikiText alignment leaves a
+mean 1.64% perplexity penalty. See the
 [replication ledger and roadmap](docs/replication-roadmap.md) for the full protocol and
 the remaining gap to end-to-end replication.
 
@@ -180,6 +182,7 @@ ssa/
 mlx_train.py            # MLX training entrypoint
 mlx_evaluate.py         # held-out and length-extrapolation evaluation
 mlx_donor_router.py     # frozen-LM attention distillation into binary hash routing
+mlx_lfm_replacement.py  # gated one-layer LFM2.5 sparse conversion and evaluation
 lfm_embedding_router.py # LFM2.5 semantic block embeddings into multiprobe hashes
 mlx_selector.py         # selector benchmark
 mlx_attention_bench.py  # selected-attention benchmark

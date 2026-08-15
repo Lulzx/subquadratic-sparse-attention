@@ -8,6 +8,8 @@ import mlx.optimizers as optim
 import numpy as np
 
 from mlx_train import curriculum_length, scaled_batch_size
+from mlx_donor_router import DonorHashRouter
+from mlx_lfm_replacement import GatedLFMReplacement
 from ssa.mlx_attention import random_weights, sparse_attention, sparse_attention_chunked
 from ssa.mlx_model import MLXSSAAttention, causal_slot_attention
 from ssa.mlx_selector import probe_codes, select_indices, select_indices_qk
@@ -208,6 +210,50 @@ def test_weight_resume():
     print("PASS weights-only checkpoint resume")
 
 
+def test_lfm_replacement_gate_and_causality():
+    class FakeLFMAttention(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.n_heads = 2
+            self.n_kv_heads = 1
+            self.scale = 0.5
+            self.q_proj = nn.Linear(8, 8, bias=False)
+            self.k_proj = nn.Linear(8, 4, bias=False)
+            self.v_proj = nn.Linear(8, 4, bias=False)
+            self.out_proj = nn.Linear(8, 8, bias=False)
+            self.q_layernorm = nn.RMSNorm(4)
+            self.k_layernorm = nn.RMSNorm(4)
+            self.rope = nn.RoPE(4, base=10000.0, traditional=False)
+
+        def __call__(self, x, mask=None, cache=None):
+            del mask, cache
+            return self.q_proj(x)
+
+    mx.random.seed(19)
+    dense = FakeLFMAttention()
+    router = DonorHashRouter(8, tables=2, bits=4)
+    replacement = GatedLFMReplacement(
+        dense, router, window=4, sink_tokens=1, members=2, probes=1,
+        replacement_alpha=0.0,
+    )
+    x = mx.random.normal((1, 12, 8))
+    expected = dense(x)
+    actual = replacement(x)
+    mx.eval(expected, actual)
+    np.testing.assert_array_equal(np.array(expected), np.array(actual))
+
+    before = replacement.candidate_indices(x)
+    changed = mx.concatenate([x[:, :8], mx.random.normal((1, 4, 8))], axis=1)
+    after = replacement.candidate_indices(changed)
+    replacement.replacement_alpha = 1.0
+    sparse = replacement(x)
+    mx.eval(before, after, sparse)
+    np.testing.assert_array_equal(np.array(before)[:, :8], np.array(after)[:, :8])
+    assert bool(mx.all(mx.isfinite(sparse)))
+    assert sparse.shape == x.shape
+    print("PASS LFM replacement exact gate, sparse path, and routing causality")
+
+
 if __name__ == "__main__":
     test_reference()
     test_multiprobe_neighbor()
@@ -217,3 +263,4 @@ if __name__ == "__main__":
     test_causal_global_slots()
     test_semantic_router_gradient()
     test_weight_resume()
+    test_lfm_replacement_gate_and_causality()
