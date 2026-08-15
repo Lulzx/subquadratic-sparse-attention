@@ -44,6 +44,7 @@ class GatedLFMReplacement(nn.Module):
         self.members = members
         self.probes = probes
         self.block_expansion = block_expansion
+        self.span_size = 2 if block_expansion else 1
         self.replacement_alpha = replacement_alpha
         self.dense_attention.freeze()
         self.router.freeze()
@@ -56,9 +57,26 @@ class GatedLFMReplacement(nn.Module):
             mx.stop_gradient(self.router.query_projection),
             mx.stop_gradient(self.router.key_projection),
             tables=self.router.tables, bits=self.router.bits,
-            members=self.members, probes=self.probes, block=self.block_expansion,
+            members=self.members, probes=self.probes, block=False,
             min_distance=self.window,
         )
+        if self.span_size > 1:
+            offsets = mx.arange(self.span_size).reshape(1, 1, 1, self.span_size)
+            distant = distant[..., None] + offsets
+            query_positions = mx.arange(length).reshape(1, length, 1, 1)
+            valid_distant = (distant >= self.sink_tokens) & (
+                distant < query_positions - self.window
+            )
+            distant = mx.where(valid_distant, distant, length).reshape(
+                batch, length, -1
+            )
+            # Expanded spans overlap frequently. Sort and retain each position once
+            # so duplicate anchors do not receive extra softmax weight.
+            distant = mx.sort(distant, axis=-1)
+            first = distant[..., :1] < length
+            unique = distant[..., 1:] != distant[..., :-1]
+            unique = mx.concatenate([first, unique], axis=-1)
+            distant = mx.where(unique & (distant < length), distant, -1)
         distant = mx.where(distant >= self.sink_tokens, distant, -1)
 
         positions = mx.arange(length).reshape(1, length, 1)

@@ -243,9 +243,9 @@ def test_lfm_replacement_gate_and_causality():
     np.testing.assert_array_equal(np.array(expected), np.array(actual))
 
     before = replacement.candidate_indices(x)
-    replacement.block_expansion = True
+    replacement.span_size = 2
     expanded = replacement.candidate_indices(x)
-    replacement.block_expansion = False
+    replacement.span_size = 1
     changed = mx.concatenate([x[:, :8], mx.random.normal((1, 4, 8))], axis=1)
     after = replacement.candidate_indices(changed)
     replacement.replacement_alpha = 1.0

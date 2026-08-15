@@ -81,6 +81,7 @@ def install_replacements(body, config, args, layers):
         )
         replacement.load_weights(str(checkpoint))
         replacement.replacement_alpha = 0.0
+        replacement.span_size = getattr(args, "span_size", 1)
         body.layers[layer_index].self_attn = replacement
         replacements[layer_index] = replacement
     return replacements
@@ -104,6 +105,7 @@ def main():
     parser.add_argument("--bits", type=int, default=8)
     parser.add_argument("--members", type=int, default=4)
     parser.add_argument("--probes", type=int, default=1)
+    parser.add_argument("--span-size", type=int, default=1)
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--memory-limit-mb", type=int, default=1792)
     parser.add_argument("--cache-limit-mb", type=int, default=256)

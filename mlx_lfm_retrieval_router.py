@@ -11,7 +11,7 @@ import mlx.optimizers as optim
 import numpy as np
 from mlx_lm import load
 
-from mlx_donor_router import language_body
+from mlx_donor_router import DonorHashRouter, language_body
 from mlx_lfm_behavior_eval import (
     find_text_span,
     parse_ints,
@@ -48,11 +48,11 @@ def captured_input(model, tokens, replacement):
     return np.array(captured[0].astype(mx.float16))
 
 
-def training_targets(tokenizer, lengths, positions, window):
+def training_targets(tokenizer, lengths, positions, window, train_values=TRAIN_VALUES):
     targets = []
     base_cases = 0
     skipped_local = 0
-    for task, values in TRAIN_VALUES.items():
+    for task, values in train_values.items():
         for value in values:
             for length in lengths:
                 for position in positions:
@@ -76,6 +76,7 @@ def training_targets(tokenizer, lengths, positions, window):
                             prefix_ids,
                             source_position,
                             len(prefix_ids) - 1,
+                            answer_ids[offset],
                         ))
     return targets, base_cases, skipped_local
 
@@ -89,7 +90,7 @@ def hard_source_recall(
     candidate_counts = []
     stride = max(1, len(targets) // sample_limit)
     sampled = targets[::stride][:sample_limit]
-    for prefix_ids, source_position, query_position in sampled:
+    for prefix_ids, source_position, query_position, _ in sampled:
         tokens = mx.array([prefix_ids], dtype=mx.int32)
         x_np = captured_input(model, tokens, replacement)
         x = mx.array(x_np)
@@ -138,7 +139,9 @@ def train_router(model, replacement, targets, args, layer):
     loss_and_grad = nn.value_and_grad(router, loss_fn)
     started = time.perf_counter()
     for step in range(1, args.steps + 1):
-        prefix_ids, source_position, query_position = targets[(step - 1) % len(targets)]
+        prefix_ids, source_position, query_position, _ = targets[
+            (step - 1) % len(targets)
+        ]
         tokens = mx.array([prefix_ids], dtype=mx.int32)
         x_np = captured_input(model, tokens, replacement)
         x = mx.array(x_np)
@@ -179,6 +182,7 @@ def main():
     parser.add_argument("--window", type=int, default=32)
     parser.add_argument("--sink-tokens", type=int, default=4)
     parser.add_argument("--tables", type=int, default=8)
+    parser.add_argument("--expanded-tables", type=int, default=0)
     parser.add_argument("--bits", type=int, default=8)
     parser.add_argument("--members", type=int, default=4)
     parser.add_argument("--probes", type=int, default=1)
@@ -201,6 +205,25 @@ def main():
 
     model, tokenizer, config = load(args.model, lazy=True, return_config=True)
     replacements = install_replacements(language_body(model), config, args, layers)
+    if args.expanded_tables:
+        if args.expanded_tables <= args.tables:
+            parser.error("--expanded-tables must exceed --tables")
+        for replacement in replacements.values():
+            old_router = replacement.router
+            expanded = DonorHashRouter(
+                config["hidden_size"], args.expanded_tables, args.bits
+            )
+            old_width = args.tables * args.bits
+            expanded.query_projection = mx.concatenate([
+                old_router.query_projection,
+                expanded.query_projection[:, old_width:],
+            ], axis=1)
+            expanded.key_projection = mx.concatenate([
+                old_router.key_projection,
+                expanded.key_projection[:, old_width:],
+            ], axis=1)
+            expanded.freeze()
+            replacement.router = expanded
     set_sparse(replacements, True)
     targets, base_cases, skipped_local = training_targets(
         tokenizer, lengths, positions, args.window

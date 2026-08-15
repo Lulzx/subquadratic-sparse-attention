@@ -202,6 +202,7 @@ mlx_lfm_multilayer_eval.py # individual and combined converted-layer evaluation
 mlx_lfm_joint_recovery.py  # final-hidden alignment for multiple sparse layers
 mlx_lfm_behavior_eval.py   # paired instruction and retrieval generation gate
 mlx_lfm_retrieval_router.py # streaming source-position router supervision
+mlx_lfm_retrieval_recovery.py # low-memory experimental retrieval KL/SFT
 lfm_embedding_router.py # LFM2.5 semantic block embeddings into multiprobe hashes
 mlx_selector.py         # selector benchmark
 mlx_attention_bench.py  # selected-attention benchmark

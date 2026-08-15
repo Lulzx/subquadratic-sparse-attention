@@ -38,6 +38,11 @@ kill-switch. Always report `mx.get_peak_memory()` as the actual measurement. The
 reference retrieval-router runs use a 1,400 MB configured limit and peak at 1.24–1.27 GB;
 the 1,024-token behavior matrix peaks near 1.60 GB.
 
+A targeted top-64 span-recovery run reached 1.65 GB and was interrupted. The committed
+retrieval-recovery tool therefore defaults to top 8, 100 steps, 256-token inputs, and a
+64 MB cache. Larger settings require an explicit override and are not recommended on
+this laptop.
+
 ## Recommended long-context settings
 
 Use batch size 1 beyond 1K for end-to-end model evaluation:

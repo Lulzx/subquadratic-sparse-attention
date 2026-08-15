@@ -98,6 +98,7 @@ def main():
     parser.add_argument("--bits", type=int, default=8)
     parser.add_argument("--members", type=int, default=4)
     parser.add_argument("--probes", type=int, default=1)
+    parser.add_argument("--span-size", type=int, default=1)
     parser.add_argument("--steps", type=int, default=500)
     parser.add_argument("--lr", type=float, default=1e-6)
     parser.add_argument(
@@ -153,6 +154,7 @@ def main():
         )
         replacement.load_weights(str(checkpoint))
         replacement.replacement_alpha = 1.0
+        replacement.span_size = args.span_size
         body.layers[layer_index].self_attn = replacement
         replacements[layer_index] = replacement
 

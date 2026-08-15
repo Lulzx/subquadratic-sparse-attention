@@ -444,3 +444,25 @@ successor expansion improves seed-0 variable retrieval only to 3/9 and changes t
 attention distribution, so it is not accepted as a fix. A broader six-value seed-0
 router curriculum also regresses overall preservation to 69.23%. Stronger variable-
 span retrieval is required before the behavior gate passes.
+
+### Rejected token-span fixes
+
+The variable-value failure does not disappear with straightforward increases in token
+candidates. These seed-0 diagnostics use the same unseen 13-token value:
+
+| Change | Result | Decision |
+|---|---:|---|
+| 8 tables, 8 members, 2 probes | 3/9 exact passkeys | Reject; only one extra exact case at a much larger K |
+| One successor per retrieved token | 3/9 variable values | Reject; changes the attention distribution and remains weak |
+| Four-token deduplicated spans | 0/3 variable values at 256 | Reject before long-length scaling |
+| Four-token spans + ordinary top-64 KL recovery | 0/3 at 256 | Reject |
+| Four-token spans + streamed targeted KL | 0/3 at 256 | Reject |
+| Four-token spans + diverse retrieval SFT | 0/3 at 256 | Reject |
+| 16 tables × 2 members, fixed `K=32` | 0/3 variable values at 256 | Reject; exact and lexical cases remain intact |
+
+The full top-64 targeted span run was interrupted when measured MLX peak memory reached
+1.65 GB, above the operating envelope chosen after the laptop-freeze incident. A safe
+top-8, 100-step version peaks at 1.49 GB but does not improve the held-out result.
+These controls point away from further token-level tuning and toward a learned block or
+span index whose routed unit preserves a complete value, followed by exact token
+attention inside the retrieved block.
