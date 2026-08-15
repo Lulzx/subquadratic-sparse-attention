@@ -9,7 +9,7 @@ import mlx.nn as nn
 import mlx.optimizers as optim
 import numpy as np
 from mlx_lm import load
-from mlx_lm.models.base import create_attention_mask
+from mlx_lm.models.base import create_attention_mask, create_ssm_mask
 
 from ssa.mlx_selector import select_indices_qk
 
@@ -22,6 +22,13 @@ DEFAULT_TRAIN_FILES = [
     "docs/reproduction.md",
 ]
 DEFAULT_EVAL_FILES = ["docs/limitations.md", "docs/model-card-audit.md"]
+
+
+def language_body(model):
+    """Return the text decoder body for text-only and multimodal MLX-LM models."""
+    if hasattr(model, "language_model"):
+        return model.language_model.model
+    return model.model
 
 
 class DonorHashRouter(nn.Module):
@@ -116,20 +123,55 @@ def token_segments(tokenizer, paths, seq_len, stride, limit):
 
 
 def donor_example(model, tokens, layer_index, window, sink_tokens):
-    h = model.model.embed_tokens(tokens)
-    mask = create_attention_mask(h)
-    for layer in model.model.layers[:layer_index]:
-        h = layer(h, mask)
-    layer = model.model.layers[layer_index]
-    x = layer.input_layernorm(h)
+    body = language_body(model)
+    h = body.embed_tokens(tokens)
+    attention_mask = create_attention_mask(h)
+    state_mask = create_ssm_mask(h)
+    for layer in body.layers[:layer_index]:
+        layer_mask = attention_mask if hasattr(layer, "self_attn") else state_mask
+        h = layer(h, layer_mask)
+    layer = body.layers[layer_index]
+    if getattr(layer, "is_linear", False) or not hasattr(layer, "self_attn"):
+        raise ValueError(
+            f"layer {layer_index} is not a full-attention layer; choose one with self_attn"
+        )
+    layer_norm = getattr(layer, "input_layernorm", None)
+    if layer_norm is None:
+        layer_norm = getattr(layer, "operator_norm", None)
+    if layer_norm is None:
+        raise ValueError(f"cannot find the input normalization for layer {layer_index}")
+    x = layer_norm(h)
     attention = layer.self_attn
     batch, length, _ = x.shape
-    queries = attention.q_proj(x).reshape(batch, length, attention.n_heads, -1).transpose(0, 2, 1, 3)
-    keys = attention.k_proj(x).reshape(batch, length, attention.n_kv_heads, -1).transpose(0, 2, 1, 3)
+    heads = getattr(attention, "n_heads", getattr(attention, "num_attention_heads", None))
+    kv_heads = getattr(
+        attention, "n_kv_heads", getattr(attention, "num_key_value_heads", None)
+    )
+    head_dim = getattr(attention, "head_dim", x.shape[-1] // heads)
+    query_projection = attention.q_proj(x)
+    if query_projection.shape[-1] == heads * head_dim * 2:
+        queries, _ = mx.split(
+            query_projection.reshape(batch, length, heads, -1), 2, axis=-1
+        )
+    else:
+        queries = query_projection.reshape(batch, length, heads, head_dim)
+    keys = attention.k_proj(x).reshape(batch, length, kv_heads, head_dim)
+    query_norm = getattr(attention, "q_norm", None)
+    if query_norm is None:
+        query_norm = getattr(attention, "q_layernorm", None)
+    key_norm = getattr(attention, "k_norm", None)
+    if key_norm is None:
+        key_norm = getattr(attention, "k_layernorm", None)
+    if query_norm is not None:
+        queries = query_norm(queries)
+    if key_norm is not None:
+        keys = key_norm(keys)
+    queries = queries.transpose(0, 2, 1, 3)
+    keys = keys.transpose(0, 2, 1, 3)
     queries = attention.rope(queries)
     keys = attention.rope(keys)
-    if attention.n_heads != attention.n_kv_heads:
-        keys = mx.repeat(keys, attention.n_heads // attention.n_kv_heads, axis=1)
+    if heads != kv_heads:
+        keys = mx.repeat(keys, heads // kv_heads, axis=1)
     query_start = window + sink_tokens + 1
     queries = queries[:, :, query_start:]
     scores = mx.einsum("bhqd,bhkd->bhqk", queries, keys) * attention.scale
@@ -203,8 +245,8 @@ def hard_metrics(router, examples, members, probes, window, sink_tokens):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--model", default="HuggingFaceTB/SmolLM2-135M")
-    parser.add_argument("--layer", type=int, default=15)
+    parser.add_argument("--model", default="LiquidAI/LFM2.5-350M")
+    parser.add_argument("--layer", type=int, default=14)
     parser.add_argument("--seq-len", type=int, default=256)
     parser.add_argument("--stride", type=int, default=192)
     parser.add_argument("--window", type=int, default=32)
@@ -223,7 +265,7 @@ def main():
     parser.add_argument("--eval-files", default="")
     parser.add_argument("--log-every", type=int, default=25)
     parser.add_argument("--seed", type=int, default=0)
-    parser.add_argument("--output", default="runs/smollm2-router.safetensors")
+    parser.add_argument("--output", default="runs/lfm2.5-router.safetensors")
     args = parser.parse_args()
     if args.seq_len <= args.window + 1:
         parser.error("--seq-len must exceed --window + 1")
@@ -238,8 +280,17 @@ def main():
     train_paths = parse_paths(args.train_files, DEFAULT_TRAIN_FILES)
     eval_paths = parse_paths(args.eval_files, DEFAULT_EVAL_FILES)
     donor, tokenizer, config = load(args.model, lazy=True, return_config=True)
-    if args.layer < 0 or args.layer >= len(donor.model.layers):
-        parser.error(f"--layer must be between 0 and {len(donor.model.layers) - 1}")
+    body = language_body(donor)
+    if args.layer < 0 or args.layer >= len(body.layers):
+        parser.error(f"--layer must be between 0 and {len(body.layers) - 1}")
+    if not hasattr(body.layers[args.layer], "self_attn"):
+        full_layers = [
+            index for index, layer in enumerate(body.layers)
+            if hasattr(layer, "self_attn")
+        ]
+        parser.error(
+            f"--layer {args.layer} is not full attention; full-attention layers: {full_layers}"
+        )
     train_tokens = token_segments(
         tokenizer, train_paths, args.seq_len, args.stride, args.train_segments
     )
@@ -296,9 +347,10 @@ def main():
     output = pathlib.Path(args.output)
     output.parent.mkdir(parents=True, exist_ok=True)
     router.save_weights(str(output))
+    donor_config = config.get("text_config", config)
     metadata = vars(args) | {
         "donor_config": {
-            key: config.get(key) for key in [
+            key: donor_config.get(key) for key in [
                 "model_type", "hidden_size", "num_hidden_layers",
                 "num_attention_heads", "num_key_value_heads", "max_position_embeddings",
             ]

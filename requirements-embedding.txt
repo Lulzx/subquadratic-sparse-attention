@@ -1,0 +1,3 @@
+# Semantic block-router teacher. The remote model revision is pinned in the runner.
+sentence-transformers==5.1.2
+torch==2.7.1

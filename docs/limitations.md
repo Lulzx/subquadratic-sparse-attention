@@ -24,7 +24,7 @@ The router currently receives balance and confidence losses. It is not trained t
 
 ### Collision frontier
 
-The 128-token baseline falls from about 95% at 2K to 79% at 4K under the matched ablation protocol. A three-seed, fixed-budget eight-table curriculum configuration raises mean 4K accuracy to 97.03%. Controls identify the curriculum as the dominant measured change, with more tables and multiprobe routing adding smaller consistent gains. On seed 0, stagewise fine-tuning through 8K raises 16K accuracy to 97.38%, but accuracy still falls to 95.32% at 32K. The failure boundary moves with curriculum length rather than disappearing.
+The 128-token baseline falls from about 95% at 2K to 79% at 4K under the matched ablation protocol. A three-seed, fixed-budget eight-table curriculum configuration raises mean 4K accuracy to 97.03%. Controls identify the curriculum as the dominant measured change, with more tables also helping. A selector audit invalidated the earlier positive multiprobe ablation: corrected query-only multiprobe evaluation scores 94.23%, and those checkpoints must be retrained. On seed 0, stagewise fine-tuning through 8K raises 16K accuracy to 97.38%, but accuracy still falls to 95.32% at 32K. The failure boundary moves with curriculum length rather than disappearing.
 
 ### Tiny model
 

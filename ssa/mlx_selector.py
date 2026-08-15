@@ -30,32 +30,13 @@ def probe_codes(x, projection, tables, bits, probes=1):
 
 
 def select_indices(x, projection, tables=4, bits=16, members=4, probes=1, block=True):
-    batch, length, _ = x.shape
-    codes = probe_codes(x, projection, tables, bits, probes)
-    table = mx.arange(tables).reshape(1, 1, tables, 1)
-    sample = mx.arange(batch).reshape(batch, 1, 1)
-    global_codes = (sample[..., None] * tables + table) * (1 << bits) + codes
-    flat_codes = global_codes.reshape(-1)
-    entries = batch * length * tables * probes
-    flat_pos = (mx.arange(entries) // (tables * probes)) % length
-    order = mx.argsort(flat_codes)
-    inverse = mx.put_along_axis(mx.zeros_like(order), order, mx.arange(order.size), axis=0)
-    current = mx.arange(entries).reshape(batch, length, tables, probes)
-    rank = inverse[current]
-    offsets = mx.arange(members).reshape(1, 1, 1, 1, members)
-    take = rank[..., None] - 1 - offsets
-    valid = take >= 0
-    candidate_entry = order[mx.maximum(take, 0)]
-    anchor = flat_pos[candidate_entry]
-    candidate_code = flat_codes[candidate_entry]
-    valid = valid & (candidate_code == global_codes[..., None])
-    query_pos = mx.arange(length).reshape(1, length, 1, 1, 1)
-    valid = valid & (anchor < query_pos)
-    anchor = mx.where(valid, anchor, -1)
-    if not block:
-        return anchor.reshape(batch, length, -1)
-    successor = mx.where(anchor >= 0, mx.minimum(anchor + 1, length - 1), -1)
-    return mx.stack([anchor, successor], axis=-1).reshape(batch, length, -1)
+    # Store each key once under its exact code and multiprobe only the query.
+    # Besides matching conventional LSH lookup, the merged query/key index uses
+    # position in its sort key, so future tokens cannot displace earlier members.
+    return select_indices_qk(
+        x, x, projection, projection, tables=tables, bits=bits,
+        members=members, probes=probes, block=block,
+    )
 
 
 def select_indices_qk(query, key, query_projection, key_projection, tables=4, bits=16,

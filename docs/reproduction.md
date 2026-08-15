@@ -149,6 +149,25 @@ over at least three seeds with the same curriculum and selected-token budget. Se
 
 ## Pretrained donor-router distillation
 
+### Current LFM2.5 causal donor
+
+The default is the instruction-tuned
+[LFM2.5-350M](https://huggingface.co/LiquidAI/LFM2.5-350M). Its hybrid decoder has six
+full-attention layers interleaved with ten convolution layers; the default target is
+the last attention layer, index 14. Run a minimal local smoke test with:
+
+```bash
+python3 mlx_donor_router.py \
+  --seq-len 64 --window 8 --sink-tokens 2 \
+  --train-segments 1 --eval-segments 1 --steps 1 \
+  --output runs/lfm2.5-causal-donor-smoke.safetensors
+```
+
+Use `--model LiquidAI/LFM2.5-350M-Base` for the base-model ablation. The historical
+SmolLM2 protocol below remains the reproducible three-seed baseline.
+
+### Historical SmolLM2 baseline
+
 The first natural-language routing experiment downloads the approximately 257 MB BF16
 SmolLM2-135M base checkpoint on first use. It freezes the donor, caches layer-15 hidden
 states and distant attention distributions, and trains only the hash projections:
@@ -181,6 +200,25 @@ metadata under `runs/` remain ignored by Git.
 The hard metrics use bucket lookup with `min_distance=window`, so local-window tokens
 cannot consume the distant sparse budget. Continuous top-k is reported only as a
 diagnostic ceiling and must not be confused with subquadratic hash lookup.
+
+### LFM2.5 semantic embedding router
+
+Install the separate PyTorch/MPS environment dependencies, then distill the frozen
+bidirectional embedding geometry into shared binary projections:
+
+```bash
+python3 -m pip install -r requirements-embedding.txt
+python3 lfm_embedding_router.py \
+  --tables 8 --bits 8 --radius 2 --steps 300 --seed 0 \
+  --output runs/lfm2.5-embedding-router-seed0.json
+```
+
+The runner pins the model's remote-code revision and includes a narrow compatibility
+shim for the `seq_idx` keyword introduced by Transformers 5. It uses headings as
+queries and their Markdown section bodies as positive document blocks. This is a
+small block-routing plumbing benchmark; it is not an LM benchmark or a general
+semantic-retrieval result. Repeat with seeds 1 and 2 before drawing comparative
+conclusions.
 
 ## Length extrapolation
 

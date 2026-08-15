@@ -130,13 +130,15 @@ The Mac-feasible conversion sequence should be:
 7. recover capability on mixed short documents and staged long contexts;
 8. record perplexity and short-task regressions at every replacement stage.
 
-The first donor is
-[HuggingFaceTB/SmolLM2-135M](https://huggingface.co/HuggingFaceTB/SmolLM2-135M):
-an Apache-2.0, 135M-parameter, 8K base model whose BF16 weights occupy about 257 MB.
-It loads directly through MLX-LM and leaves enough of the M4 Pro's 24 GB unified memory
-for a frozen teacher, sparse replacement, activations, and optimizer state. The larger
-[Qwen2.5-0.5B](https://huggingface.co/Qwen/Qwen2.5-0.5B) remains the second-stage donor
-after the conversion procedure is stable.
+The historical first donor was
+[HuggingFaceTB/SmolLM2-135M](https://huggingface.co/HuggingFaceTB/SmolLM2-135M), which
+established the three-seed routing baseline. The active causal donor is now the much
+more recent [LFM2.5-350M](https://huggingface.co/LiquidAI/LFM2.5-350M), with
+[LFM2.5-350M-Base](https://huggingface.co/LiquidAI/LFM2.5-350M-Base) retained as a
+base-model ablation. Its hybrid 16-layer decoder has six full-attention layers and ten
+convolution layers, making it both Mac-feasible and relevant to hybrid efficient
+architectures. [LFM2.5-Embedding-350M](https://huggingface.co/LiquidAI/LFM2.5-Embedding-350M)
+is a separate bidirectional semantic teacher, not a causal-LM replacement.
 
 The first donor-router experiment distills layer 15's dense Q/K distribution without
 modifying donor weights. It excludes the first four attention-sink tokens and the local
@@ -240,10 +242,11 @@ budget, latency, peak memory, and failure by retrieval distance.
 
 ### Stage C: pretrained language-model conversion
 
-SmolLM2-135M is the first donor because dense and sparse copies can coexist on the
-available Mac during layerwise distillation. Router-only distillation is now working;
-the next step replaces one middle attention layer and aligns its output. Establish
-short-context perplexity parity before replacing more layers or extending context.
+LFM2.5-350M is now the primary donor; its three-seed layer-14 router run peaks at 835 MB
+of MLX memory on the available Mac and raises mean hard teacher top-1 recall from
+13.39% to 32.95%. The next step replaces one
+full-attention layer while preserving the convolution layers, then aligns its output.
+Establish short-context perplexity parity before replacing more layers or extending context.
 Afterward, run language-model retrieval benchmarks, then general capability benchmarks.
 GPQA, LiveCodeBench, and AutomationBench belong at the end of this sequence; they cannot
 diagnose router quality in a tiny synthetic model.

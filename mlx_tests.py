@@ -107,12 +107,21 @@ def test_length_curriculum():
 def test_multiprobe_causality():
     rng = np.random.default_rng(7)
     x_np = rng.standard_normal((1, 32, 8), dtype=np.float32)
-    projection = mx.array(rng.standard_normal((8, 12), dtype=np.float32))
-    before = select_indices(mx.array(x_np), projection, tables=3, bits=4, probes=3)
+    projection_np = rng.standard_normal((8, 12), dtype=np.float32)
+    # Construct owned MLX buffers. mx.array(np_array) may share NumPy storage,
+    # which makes this a host-buffer lifetime test instead of a causality test.
+    projection = mx.array(projection_np.tolist(), dtype=mx.float32)
+    before_input_np = x_np.copy()
+    before_input = mx.array(before_input_np.tolist(), dtype=mx.float32)
+    before = select_indices(before_input, projection, tables=3, bits=4, probes=3)
+    mx.eval(before)
+    before_np = np.array(before).copy()
     x_np[:, 20:] = rng.standard_normal((1, 12, 8), dtype=np.float32)
-    after = select_indices(mx.array(x_np), projection, tables=3, bits=4, probes=3)
+    after_input_np = x_np.copy()
+    after_input = mx.array(after_input_np.tolist(), dtype=mx.float32)
+    after = select_indices(after_input, projection, tables=3, bits=4, probes=3)
     mx.eval(before, after)
-    np.testing.assert_array_equal(np.array(before)[:, :20], np.array(after)[:, :20])
+    np.testing.assert_array_equal(before_np[:, :20], np.array(after)[:, :20])
     print("PASS multiprobe selector causality under future mutation")
 
 

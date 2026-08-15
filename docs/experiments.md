@@ -124,9 +124,16 @@ The joint follow-up changed too many variables to identify the source of the gai
 |---|---:|---:|---:|---:|---:|
 | 4 tables, 1 probe, 4 members | 95.38% | 96.29% | 95.16% | 32,860 / 34,368 | 95.61% |
 | 8 tables, 1 probe, 2 members | 96.99% | 97.38% | 96.72% | 33,347 / 34,368 | **97.03%** |
-| 4 tables, 2 probes, 2 members | 97.01% | 96.60% | 96.82% | 33,272 / 34,368 | 96.81% |
+| 4 tables, 2 probes, 2 members (corrected evaluation) | 94.87% | 93.26% | 94.56% | 32,385 / 34,368 | 94.23% |
 
-Both extra tables and multiprobe routing improve every tested seed at fixed read budget. Eight tables lead by 0.22 percentage points on the three-seed mean, which is too small a sample to treat as a statistically established difference. It is the recommended configuration because it is slightly better here and avoids multiprobe index expansion.
+Extra tables improve every tested seed at fixed read budget. The original multiprobe
+implementation inserted keys under every probe code and sorted the entire sequence
+before causal filtering, allowing future entries to displace eligible past bucket
+members. After switching to standard query-only probing with keys stored once under
+their exact codes, the already-trained multiprobe checkpoints fall to 94.23%. They
+were optimized under the old selector and must be retrained before multiprobe can be
+compared fairly. The eight-table/one-probe headline is unchanged at 97.03% under the
+corrected selector.
 
 Two additional seed-0 controls isolate curriculum from training duration under the original four-table selector:
 
@@ -246,3 +253,43 @@ two-stage hash-plus-rerank selector. It should not increase the hard budget sile
 
 This is partial natural-language evidence for learned content routing. It is not yet
 evidence for language-model quality, subquadratic end-to-end execution, RULER, or NIAH.
+
+## LFM2.5 paired donor smoke tests
+
+The current-generation donor pair was tested locally on 2026-08-15:
+
+- [LFM2.5-350M](https://huggingface.co/LiquidAI/LFM2.5-350M) is the causal LM donor;
+- [LFM2.5-Embedding-350M](https://huggingface.co/LiquidAI/LFM2.5-Embedding-350M) is
+  the frozen bidirectional semantic block teacher.
+
+The causal MLX experiment targeted attention layer 14 with eight 256-token training
+segments, two held-out segments, eight 8-bit tables, four members, one probe, and 200
+optimizer steps. Across seeds 0, 1, and 2 (438 held-out distant queries each), hard
+teacher top-1 recall rose from **13.39% to 32.95%**, and retained teacher mass rose from
+**11.51% to 22.92%**. Mean candidates increased from 9.54 to 13.23. Continuous top-32
+top-1 recall rose from 51.60% to 62.25%, leaving a 29.30-point hard-index gap. Peak MLX
+memory was 834.90 MB. This validates current-model router learning, but still does not
+replace a donor layer or establish preserved language quality.
+
+The embedding probe used 40 repository-documentation sections for training and 32
+sections from disjoint files for evaluation. A query is a heading and its positive
+document is that section body. Continuous cosine top-1 recall was 28.12%. The table
+below shows the three-seed mean held-out positive recall and fraction of all blocks
+admitted by a shared random hyperplane hash:
+
+| Tables | Hamming radius | Positive recall | Candidate fraction |
+|---:|---:|---:|---:|
+| 1 | 0 | 1.04% | 0.52% |
+| 1 | 2 | 16.67% | 19.43% |
+| 4 | 1 | 33.33% | 19.14% |
+| 4 | 2 | 76.04% | 57.52% |
+| 8 | 1 | 57.29% | 36.75% |
+| 8 | 2 | 92.71% | 82.23% |
+
+A learned shared projection improved the mean low-budget one-table/radius-two point to
+25.00% recall at 16.41% candidates, but was worse than random projection at the
+largest settings (67.71% versus 92.71% recall for eight tables/radius two). A first
+attempt with independent query/key projections collapsed to 6.25% held-out recall;
+it overfit the 40-section corpus and was replaced by a shared projection that preserves
+the embedding model's geometry. The useful result is the measured multiprobe tradeoff,
+not a claim that this toy corpus validates semantic generalization.

@@ -45,7 +45,7 @@ The model was trained at 128 tokens and evaluated without further training:
 | 2,048 | 16× | 95.22% |
 | 4,096 | 32× | 77.93% |
 
-A controlled three-seed follow-up with eight tables, one probe, two members, and a staged 128/256/512/1,024-token curriculum reaches **97.03% mean accuracy at 4,096 tokens** (33,347 / 34,368 held-out answers). At the same `K=32` budget, curriculum alone reaches 95.61% and a four-table/two-probe variant reaches 96.81%. Curriculum is the dominant change; additional tables and multiprobe routing each provide a smaller consistent gain.
+A controlled three-seed follow-up with eight tables, one probe, two members, and a staged 128/256/512/1,024-token curriculum reaches **97.03% mean accuracy at 4,096 tokens** (33,347 / 34,368 held-out answers). At the same `K=32` budget, curriculum alone reaches 95.61%. After correcting multiprobe indexing so keys are stored only under their exact code and future entries cannot displace past bucket members, the four-table/two-probe checkpoints score 94.23%, not the previously reported 96.81%. Curriculum and additional tables remain supported; multiprobe requires retraining under the corrected selector.
 
 An exploratory seed-0 checkpoint trained through 4K and then fine-tuned for 300 steps at 8K with a fresh optimizer reaches **97.38% at 16K** and **95.32% at 32K**. Carrying one optimizer through the entire from-scratch 8K curriculum performs worse, at 95.67% and 91.41%. MQAR caps the number of stored associations at 512, so these very long cases primarily test retrieval distance and positional extrapolation rather than increasing task complexity.
 
@@ -62,6 +62,15 @@ of unique candidates falls from 16.95 to 11.70. This is natural-language evidenc
 the selector only; no donor attention layer has been replaced yet. See the
 [replication ledger and roadmap](docs/replication-roadmap.md) for the full protocol and
 the remaining gap to end-to-end replication.
+
+The active donor pair is now current-generation Liquid AI: the causal
+[LFM2.5-350M](https://huggingface.co/LiquidAI/LFM2.5-350M) supplies language-model
+states and attention targets, while
+[LFM2.5-Embedding-350M](https://huggingface.co/LiquidAI/LFM2.5-Embedding-350M)
+supplies bidirectional semantic block embeddings. Both run locally on Apple Silicon.
+An LFM causal layer-14 smoke test peaks at 672 MB of MLX memory; the separate embedding
+probe exposes table-count and Hamming-multiprobe recall/candidate tradeoffs. These are
+router plumbing results, not evidence that donor language quality has been preserved.
 
 ## Architecture
 
@@ -171,6 +180,7 @@ ssa/
 mlx_train.py            # MLX training entrypoint
 mlx_evaluate.py         # held-out and length-extrapolation evaluation
 mlx_donor_router.py     # frozen-LM attention distillation into binary hash routing
+lfm_embedding_router.py # LFM2.5 semantic block embeddings into multiprobe hashes
 mlx_selector.py         # selector benchmark
 mlx_attention_bench.py  # selected-attention benchmark
 replicate.py            # arithmetic audit of public model-card tables
