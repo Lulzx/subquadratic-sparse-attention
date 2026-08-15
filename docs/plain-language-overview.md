@@ -42,11 +42,11 @@ activations are cached once and reused. The current one-layer conversion peaks n
 - Replaced layer 12 independently; it has no measured penalty on this test slice.
 - Loaded layers 12 and 14 together. Before joint recovery, their combined mean penalty
   is 1.19%.
-- Completed three-seed joint recovery of both layers. Their mean perplexity ratio is
-  0.9935 relative to dense, using only 1.39 GB peak MLX memory. All three seeds are at
-  or slightly below dense loss on this small slice. That apparent improvement may be
-  test noise or regularization, so it is reported as no measured quality loss rather
-  than a real quality improvement.
+- Completed three-seed joint recovery of both layers using only 1.39 GB peak MLX
+  memory. An initial 4,096-token slice appeared equal to dense, but a stronger paired
+  audit over 65,536 tokens per corpus finds 1.1100 times dense perplexity on WikiText
+  and 0.9945 times on PG-19. The larger result supersedes the small-slice conclusion:
+  quality parity has not yet been established.
 
 ## What this does not prove yet
 
@@ -60,8 +60,10 @@ activations are cached once and reused. The current one-layer conversion peaks n
 
 ## What comes next
 
-The next conversion target is attention layer 10. After every new layer, individual
-and combined quality must be measured before proceeding to layers 8, 5, and 2. Only
+The immediate target is broader mixed-corpus recovery of layers 12 and 14. Layer 10
+must wait until the larger WikiText regression is below the quality threshold. After
+every new layer, individual and combined quality must be measured before proceeding
+to layers 8, 5, and 2. Only
 after all six attention layers survive conversion should the project focus on a
 persistent decode cache, strict linear-time indexing, broad benchmarks, and real
 end-to-end speedups.

@@ -358,3 +358,20 @@ test loss exactly.
 The result shows that two independently converted layers can be repaired together on
 the local Mac without a measured loss on this small WikiText slice. It does not show
 general quality improvement, long-context task retention, or runtime acceleration.
+
+### Expanded paired quality audit
+
+The 4,096-token result above was too small. A follow-up evaluates 256 paired 256-token
+segments per corpus (65,536 tokens), with identical inputs for dense and sparse paths
+and 10,000 paired bootstrap resamples. The larger result supersedes the small-slice
+parity interpretation:
+
+| Corpus | Seed 0 ratio (95% CI) | Seed 1 ratio (95% CI) | Seed 2 ratio (95% CI) | Geometric mean |
+|---|---:|---:|---:|---:|
+| WikiText-2 test | 1.1099 (1.0811–1.1400) | 1.1159 (1.0867–1.1477) | 1.1042 (1.0758–1.1344) | **1.1100** |
+| PG-19 validation | 1.0028 (0.9694–1.0381) | 0.9870 (0.9542–1.0215) | 0.9938 (0.9620–1.0266) | **0.9945** |
+
+All WikiText intervals show a material regression, while every PG-19 interval spans
+parity. This distribution dependence demonstrates why a tiny perplexity slice cannot
+gate further conversion. Layer 10 conversion is paused until mixed-corpus recovery
+reduces the larger WikiText penalty below 2% without harming PG-19.

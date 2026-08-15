@@ -207,6 +207,18 @@ Repeat both commands for seeds 1 and 2. The joint stage freezes the complete don
 including dense fallback branches, and unfreezes only the copied sparse Q/K/V/O
 projections. Its zero-gate check must remain exactly equal to dense loss.
 
+Run the larger paired quality gate before converting another layer:
+
+```bash
+python3 mlx_lfm_quality_eval.py \
+  --layers 12,14 --tokens-per-corpus 65536 --bootstrap-samples 10000 \
+  --batch-size 4 --seed 0
+```
+
+Repeat for seeds 1 and 2. The command evaluates WikiText-2 test and the script-free
+`emozilla/pg19` validation mirror, reports paired bootstrap intervals, and uses jointly
+recovered checkpoints by default. A smaller result must not override this audit.
+
 ### Historical SmolLM2 baseline
 
 The first natural-language routing experiment downloads the approximately 257 MB BF16

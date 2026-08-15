@@ -34,7 +34,7 @@ The measured baseline combines causal sliding-window attention with content-addr
 | MQAR mean accuracy at the former 4K frontier | **97.03%** |
 | MQAR accuracy at 16K after an 8K fine-tuning stage | **97.38%** |
 | LFM2.5 one-layer sparse replacement perplexity penalty | **+1.64% mean** |
-| LFM2.5 two-layer model after joint recovery | **0.9935× dense perplexity** |
+| LFM2.5 two-layer model, 65K-token quality audit | **1.1100× WikiText / 0.9945× PG-19** |
 
 The model was trained at 128 tokens and evaluated without further training:
 
