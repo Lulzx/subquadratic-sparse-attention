@@ -15,6 +15,7 @@ That run produced useful evidence—dense attention exhausted memory while the s
 | `mlx_selector.py` | 16,384 tokens |
 | `mlx_attention_bench.py` | 16,384 tokens |
 | `mlx_evaluate.py` | 4,096 tokens |
+| LFM2.5 recovery/quality/behavior scripts | 1,792 MB MLX working-set limit |
 
 Larger requested lengths are skipped with an explicit message instead of being attempted.
 
@@ -25,6 +26,17 @@ Larger requested lengths are skipped with an explicit message instead of being a
 - MLX benchmarks call `mx.clear_cache()` after each length.
 - MLX peak-memory counters are reset for each row.
 - Selected attention is chunked in groups of 1,024 queries at inference time.
+- LFM2.5 teacher distributions are moved to host float16 arrays immediately instead
+  of retaining full device-side target caches.
+- Retrieval-router training streams one prompt at a time and discards its hidden
+  states after each update. It does not cache the training corpus in unified memory.
+- Model experiments run sequentially. Do not run multiple MLX training jobs in
+  parallel on this laptop.
+
+`mx.set_memory_limit` configures MLX's working-set scheduler; it is not a strict process
+kill-switch. Always report `mx.get_peak_memory()` as the actual measurement. The
+reference retrieval-router run uses a 1,400 MB configured limit and peaks at 1.24 GB;
+the 1,024-token behavior matrix peaks near 1.60 GB.
 
 ## Recommended long-context settings
 

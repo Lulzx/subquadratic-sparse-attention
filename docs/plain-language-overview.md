@@ -50,6 +50,11 @@ activations are cached once and reused. The current one-layer conversion peaks n
   probabilities on mixed WikiText and PG-19 data. Across three seeds, the larger audit
   now measures 0.9675 times dense perplexity on WikiText and 0.8712 times on PG-19.
   Every confidence interval passes the 2% gate, at 1.61 GB peak MLX memory.
+- Added a generation test that catches failures perplexity cannot see. The recovered
+  sparse model initially keeps only 3 of 26 retrieval answers that dense LFM2.5 gets
+  right. Directly teaching the hash router which source token is needed raises seed 0
+  to 19 of 26, including every exact and paraphrased-name case through 1,024 tokens.
+  Long multi-token values remain weak at 2 of 9 and are the next retrieval target.
 
 ## What this does not prove yet
 
@@ -63,10 +68,10 @@ activations are cached once and reused. The current one-layer conversion peaks n
 
 ## What comes next
 
-The immediate target is proving that the recovered model still follows instructions
-and retrieves distant information. The raw-text quality gate has passed, but it does
-not establish those behaviors. Layer 10 can proceed only after the retrieval and
-instruction checks pass. After every new layer, individual and combined quality must
+The immediate target is replicating the retrieval-router result across seeds and fixing
+long values without losing the now-preserved exact and lexical cases. The raw-text
+quality gate and a small instruction check pass, but the retrieval gate is only partial.
+Layer 10 can proceed only after that gate passes. After every new layer, individual and combined quality must
 be measured before proceeding to layers 8, 5, and 2. Only
 after all six attention layers survive conversion should the project focus on a
 persistent decode cache, strict linear-time indexing, broad benchmarks, and real

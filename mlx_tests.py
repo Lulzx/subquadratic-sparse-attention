@@ -243,11 +243,15 @@ def test_lfm_replacement_gate_and_causality():
     np.testing.assert_array_equal(np.array(expected), np.array(actual))
 
     before = replacement.candidate_indices(x)
+    replacement.block_expansion = True
+    expanded = replacement.candidate_indices(x)
+    replacement.block_expansion = False
     changed = mx.concatenate([x[:, :8], mx.random.normal((1, 4, 8))], axis=1)
     after = replacement.candidate_indices(changed)
     replacement.replacement_alpha = 1.0
     sparse = replacement(x)
-    mx.eval(before, after, sparse)
+    mx.eval(before, expanded, after, sparse)
+    assert expanded.shape[-1] == before.shape[-1] + 2 * 2 * 1
     np.testing.assert_array_equal(np.array(before)[:, :8], np.array(after)[:, :8])
     assert bool(mx.all(mx.isfinite(sparse)))
     assert sparse.shape == x.shape

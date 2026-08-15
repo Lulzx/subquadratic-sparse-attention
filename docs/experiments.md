@@ -400,3 +400,41 @@ for both corpora and all seeds. This is robust evidence for raw-text likelihood
 recovery on these two distributions. It is not evidence of improved general quality:
 instruction following, long-range retrieval, and broad downstream behavior remain
 untested and are the next gate before expanding the conversion.
+
+### Paired behavior gate and retrieval-router supervision
+
+The next gate compares dense and sparse greedy outputs on the same chat-formatted
+prompts. It contains four ordinary instruction cases and 27 retrieval cases: exact
+passkeys, lexical-mismatch/two-hop names, and 13-token variable-length values at target
+lengths 256, 512, and 1,024 and source positions 10%, 50%, and 90%. Accuracy is counted
+only by emitted answers; teacher-forced answer loss and per-layer source-token recall
+are diagnostic measurements.
+
+With 16 generated tokens allowed, dense LFM2.5 answers 26 of 27 retrieval cases. The
+KL-recovered sparse model preserves only 3 of those 26 (11.54%): 2/9 exact passkeys,
+1/8 dense-pass lexical-mismatch cases, and 0/9 variable-length values. Both ordinary
+instruction cases that the small dense donor answers are preserved.
+
+`mlx_lfm_retrieval_router.py` provides direct supervision for the distant source token
+needed at each answer-generation step. It changes only each replacement's query/key
+hash projections, streams one prompt through the model at a time, and never caches the
+hidden-state corpus. On seed 0, 300 steps per layer raise sampled hard source-token
+recall from 8.33% to 85.42% at layer 12 and from 12.50% to 91.67% at layer 14. Peak MLX
+memory is 1.24 GB.
+
+On unseen values, the resulting seed-0 checkpoint preserves 19 of 26 dense-pass cases
+(73.08%):
+
+| Retrieval form | Dense passes | Sparse preserves | Preservation |
+|---|---:|---:|---:|
+| Exact passkey | 9 | **9** | **100%** |
+| Lexical mismatch | 8 | **8** | **100%** |
+| 13-token variable value | 9 | **2** | 22.22% |
+| **All** | **26** | **19** | **73.08%** |
+
+The same checkpoint's 65,536-token paired quality ratios are 1.0004 on WikiText
+(95% CI 0.9751–1.0269) and 0.9024 on PG-19 (0.8738–0.9325). One-token successor
+expansion improves the variable case only to 3/9 and changes the attention distribution,
+so it is not accepted as a fix. A broader six-value router curriculum also regresses
+overall preservation to 69.23%; v1 remains the accepted seed-0 checkpoint. More seeds
+and stronger variable-span retrieval are required before this gate passes.

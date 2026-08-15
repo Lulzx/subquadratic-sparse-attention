@@ -241,6 +241,36 @@ Repeat for seeds 1 and 2. The command evaluates WikiText-2 test and the script-f
 `emozilla/pg19` validation mirror, reports paired bootstrap intervals, and uses jointly
 recovered checkpoints by default. A smaller result must not override this audit.
 
+### Paired behavior and retrieval-router gate
+
+Measure dense and sparse generation on exact, lexical-mismatch, and variable-length
+retrieval prompts:
+
+```bash
+python3 mlx_lfm_behavior_eval.py \
+  --checkpoint-template \
+    'runs/lfm2.5-layer{layer}-joint-kl-12-14-seed{seed}.safetensors' \
+  --lengths 256,512,1024 --positions 0.1,0.5,0.9 \
+  --tasks exact,lexical,variable --max-new-tokens 16 --seed 0
+```
+
+Train the hash routers with streamed source-position supervision:
+
+```bash
+python3 mlx_lfm_retrieval_router.py \
+  --checkpoint-template \
+    'runs/lfm2.5-layer{layer}-joint-kl-12-14-seed{seed}.safetensors' \
+  --output-template \
+    'runs/lfm2.5-layer{layer}-retrieval-router-12-14-seed{seed}.safetensors' \
+  --lengths 256,512 --positions 0.1,0.5 \
+  --steps 300 --lr 3e-4 --memory-limit-mb 1400 \
+  --cache-limit-mb 128 --seed 0
+```
+
+Rerun the behavior command with the retrieval-router checkpoint template, then rerun
+the 65,536-token quality gate. The trainer streams hidden states rather than caching
+them; the reference seed-0 run peaks at 1.24 GB MLX memory.
+
 ### Historical SmolLM2 baseline
 
 The first natural-language routing experiment downloads the approximately 257 MB BF16

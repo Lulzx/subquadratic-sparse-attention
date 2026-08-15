@@ -30,7 +30,7 @@ That is an audit result, not 67 replicated model claims.
 
 | # | Public claim family | Status | Evidence or missing work |
 |---:|---|---|---|
-| 1 | Arbitrary-position content-dependent sparse retrieval | Partial | SimHash retrieves exact MQAR keys, and a donor-distilled router improves held-out natural-language teacher-attention recall; downstream semantic retrieval remains untested. |
+| 1 | Arbitrary-position content-dependent sparse retrieval | Partial | Seed-0 LFM2.5 router supervision preserves all dense-pass exact and lexical-mismatch cases through 1,024 tokens, but only 2/9 long variable-value cases. More seeds and public benchmarks remain. |
 | 2 | End-to-end linear selection and attention | Partial | Attention reads fixed `K=32`; portable bucket construction still sorts in `O(n log n)`. |
 | 3 | Linear memory scaling | Partial | Selected attention has bounded reads and measured memory through 16K, not millions of tokens. |
 | 4 | Full-context training and ordinary autoregressive operation | Partial | Parallel causal prefill works; a persistent incremental decode cache is absent. |
@@ -38,7 +38,7 @@ That is an audit result, not 67 replicated model claims.
 | 6 | 64.5x FLOP reduction at 1M | Arithmetic only | `252 / 3.9 = 64.6`; undisclosed dimensions prevent an absolute rerun. |
 | 7 | 56x attention-layer wall-clock speedup at 1M | Arithmetic only | `54,164 / 966 = 56.07`; no matched H100 run exists. |
 | 8 | RULER average 99.12 at 128K | Not reproduced | The public benchmark has not yet been integrated. |
-| 9 | NIAH retrieval through 12M and extrapolation beyond training length | Partial | MQAR reaches 95.22% at 16x its original training length and 95.32% at 32K after staged training, but is not NIAH. |
+| 9 | NIAH retrieval through 12M and extrapolation beyond training length | Partial | MQAR reaches 95.22% at 16x training length. Seed-0 LFM2.5 exact and lexical retrieval passes through 1,024 tokens after router supervision, but this is not public NIAH or multi-million-token evidence. |
 | 10 | 0.13% of token pairs at 12M, described as nearly 1,000x fewer | Arithmetic only | The table-derived fraction implies about 775x fewer pairs. |
 | 11 | GPQA Diamond 85.4 | Not reproduced | Requires a capable converted language model and matched evaluation. |
 | 12 | LiveCodeBench 89.7 pass@4 | Not reproduced | Requires a capable converted language model and matched evaluation. |

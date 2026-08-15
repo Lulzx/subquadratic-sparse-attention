@@ -35,6 +35,7 @@ The measured baseline combines causal sliding-window attention with content-addr
 | MQAR accuracy at 16K after an 8K fine-tuning stage | **97.38%** |
 | LFM2.5 one-layer sparse replacement perplexity penalty | **+1.64% mean** |
 | LFM2.5 two-layer model after KL recovery, 65K-token audit | **0.9675× WikiText / 0.8712× PG-19** |
+| LFM2.5 seed-0 retrieval preservation after router supervision | **19 / 26 dense-pass cases** |
 
 The model was trained at 128 tokens and evaluated without further training:
 
@@ -67,6 +68,14 @@ geometric-mean sparse/dense perplexity ratios are 0.9675 on WikiText and 0.8712 
 PG-19 over 65,536 tokens per corpus. See the
 [replication ledger and roadmap](docs/replication-roadmap.md) for the full protocol and
 the remaining gap to end-to-end replication.
+
+A new paired behavior gate exposes what perplexity misses. Before retrieval-specific
+router training, the sparse two-layer model preserves only 3 of 26 natural-language
+retrieval cases that dense LFM2.5 answers. Streaming supervision of the router's source
+positions raises seed-0 preservation to 19 of 26 while keeping the large WikiText ratio
+at 1.0004 and PG-19 at 0.9024. Exact passkeys and lexical-mismatch cases pass at all
+tested 256–1,024-token lengths and positions; long multi-token values remain the clear
+failure. This result is seed 0 and is not yet a replicated benchmark claim.
 
 The active donor pair is now current-generation Liquid AI: the causal
 [LFM2.5-350M](https://huggingface.co/LiquidAI/LFM2.5-350M) supplies language-model
@@ -190,6 +199,8 @@ mlx_donor_router.py     # frozen-LM attention distillation into binary hash rout
 mlx_lfm_replacement.py  # gated one-layer LFM2.5 sparse conversion and evaluation
 mlx_lfm_multilayer_eval.py # individual and combined converted-layer evaluation
 mlx_lfm_joint_recovery.py  # final-hidden alignment for multiple sparse layers
+mlx_lfm_behavior_eval.py   # paired instruction and retrieval generation gate
+mlx_lfm_retrieval_router.py # streaming source-position router supervision
 lfm_embedding_router.py # LFM2.5 semantic block embeddings into multiprobe hashes
 mlx_selector.py         # selector benchmark
 mlx_attention_bench.py  # selected-attention benchmark

@@ -34,7 +34,7 @@ class GatedLFMReplacement(nn.Module):
     """Dense-compatible LFM attention wrapper with a sparse replacement branch."""
 
     def __init__(self, dense_attention, router, window, sink_tokens, members, probes,
-                 replacement_alpha=1.0):
+                 replacement_alpha=1.0, block_expansion=False):
         super().__init__()
         self.dense_attention = dense_attention
         self.sparse_attention = copy.deepcopy(dense_attention)
@@ -43,6 +43,7 @@ class GatedLFMReplacement(nn.Module):
         self.sink_tokens = sink_tokens
         self.members = members
         self.probes = probes
+        self.block_expansion = block_expansion
         self.replacement_alpha = replacement_alpha
         self.dense_attention.freeze()
         self.router.freeze()
@@ -55,7 +56,7 @@ class GatedLFMReplacement(nn.Module):
             mx.stop_gradient(self.router.query_projection),
             mx.stop_gradient(self.router.key_projection),
             tables=self.router.tables, bits=self.router.bits,
-            members=self.members, probes=self.probes, block=False,
+            members=self.members, probes=self.probes, block=self.block_expansion,
             min_distance=self.window,
         )
         distant = mx.where(distant >= self.sink_tokens, distant, -1)

@@ -105,8 +105,12 @@ def main():
     parser.add_argument("--members", type=int, default=4)
     parser.add_argument("--probes", type=int, default=1)
     parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument("--memory-limit-mb", type=int, default=1792)
+    parser.add_argument("--cache-limit-mb", type=int, default=256)
     parser.add_argument("--output", default="")
     args = parser.parse_args()
+    mx.set_memory_limit(args.memory_limit_mb * 2**20)
+    mx.set_cache_limit(args.cache_limit_mb * 2**20)
     layers = parse_layers(args.layers)
     corpora = [value.strip() for value in args.corpora.split(",") if value.strip()]
     segment_count = math.ceil(args.tokens_per_corpus / args.seq_len)
