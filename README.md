@@ -34,7 +34,7 @@ The measured baseline combines causal sliding-window attention with content-addr
 | MQAR mean accuracy at the former 4K frontier | **97.03%** |
 | MQAR accuracy at 16K after an 8K fine-tuning stage | **97.38%** |
 | LFM2.5 one-layer sparse replacement perplexity penalty | **+1.64% mean** |
-| LFM2.5 two-layer model, 65K-token quality audit | **1.1100× WikiText / 0.9945× PG-19** |
+| LFM2.5 two-layer model after KL recovery, 65K-token audit | **0.9675× WikiText / 0.8712× PG-19** |
 
 The model was trained at 128 tokens and evaluated without further training:
 
@@ -61,8 +61,10 @@ attention distribution into eight learned binary hash tables. Across three seeds
 876 held-out queries per seed, hard lookup raises retained teacher-attention mass from
 27.32% to 33.36% and teacher top-1 recall from 37.14% to 55.78%, while the mean number
 of unique candidates falls from 16.95 to 11.70. The current LFM2.5 experiment goes one
-step further and replaces attention layer 14: three-seed WikiText alignment leaves a
-mean 1.64% perplexity penalty. See the
+step further and replaces attention layers 12 and 14. Mixed-corpus top-64 teacher-
+distribution distillation recovers the two-layer model across three seeds; its
+geometric-mean sparse/dense perplexity ratios are 0.9675 on WikiText and 0.8712 on
+PG-19 over 65,536 tokens per corpus. See the
 [replication ledger and roadmap](docs/replication-roadmap.md) for the full protocol and
 the remaining gap to end-to-end replication.
 

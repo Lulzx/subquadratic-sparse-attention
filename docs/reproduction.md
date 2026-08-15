@@ -196,7 +196,8 @@ and layer-specific output paths. Measure both independently converted layers tog
 python3 mlx_lfm_multilayer_eval.py --layers 12,14 --seed 0
 ```
 
-Then train only their sparse branches against cached dense final hidden states:
+The historical recovery run trained only their sparse branches against cached dense
+final hidden states:
 
 ```bash
 python3 mlx_lfm_joint_recovery.py \
@@ -207,12 +208,33 @@ Repeat both commands for seeds 1 and 2. The joint stage freezes the complete don
 including dense fallback branches, and unfreezes only the copied sparse Q/K/V/O
 projections. Its zero-gate check must remain exactly equal to dense loss.
 
+The larger audit showed that final-hidden recovery was insufficient. The current
+quality-recovery command distills the dense model's top-64 next-token distribution on
+an equal mixture of WikiText and PG-19 segments:
+
+```bash
+python3 mlx_lfm_joint_recovery.py \
+  --layers 12,14 --objective kl --teacher-topk 64 \
+  --train-segments 256 --eval-segments 64 \
+  --pg19-train-segments 256 --pg19-eval-segments 64 \
+  --steps 500 --lr 1e-6 --seed 0 \
+  --checkpoint-template \
+    'runs/lfm2.5-layer{layer}-joint-12-14-seed{seed}.safetensors' \
+  --output-template \
+    'runs/lfm2.5-layer{layer}-joint-kl-12-14-seed{seed}.safetensors'
+```
+
+Repeat for seeds 1 and 2. Teacher probabilities are cached on the host in float16, so
+the run peaks near 1.61 GB instead of retaining a full-vocabulary device cache.
+
 Run the larger paired quality gate before converting another layer:
 
 ```bash
 python3 mlx_lfm_quality_eval.py \
   --layers 12,14 --tokens-per-corpus 65536 --bootstrap-samples 10000 \
-  --batch-size 4 --seed 0
+  --batch-size 4 --seed 0 \
+  --checkpoint-template \
+    'runs/lfm2.5-layer{layer}-joint-kl-12-14-seed{seed}.safetensors'
 ```
 
 Repeat for seeds 1 and 2. The command evaluates WikiText-2 test and the script-free

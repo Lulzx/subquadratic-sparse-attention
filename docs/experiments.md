@@ -375,3 +375,28 @@ All WikiText intervals show a material regression, while every PG-19 interval sp
 parity. This distribution dependence demonstrates why a tiny perplexity slice cannot
 gate further conversion. Layer 10 conversion is paused until mixed-corpus recovery
 reduces the larger WikiText penalty below 2% without harming PG-19.
+
+### Mixed-corpus teacher-distribution recovery
+
+Two diagnostic branches clarified the recovery objective. Training against dense
+final hidden states on 131,072 mixed WikiText/PG-19 tokens slightly improved hidden
+NRMSE but worsened large-audit perplexity to 1.2058 on WikiText and 1.0885 on PG-19.
+Direct next-token training produced very low raw-text perplexity but moved final hidden
+states sharply away from the frozen donor, so it is treated as continued pretraining,
+not conversion recovery.
+
+The accepted branch instead caches the dense teacher's top-64 next-token probabilities
+and the grouped probability mass of the remaining vocabulary. It trains only the two
+sparse branches for 500 steps on 256 WikiText and 256 PG-19 segments. Peak MLX memory
+is 1.61 GB. The same paired 65,536-token audit gives:
+
+| Corpus | Seed 0 ratio (95% CI) | Seed 1 ratio (95% CI) | Seed 2 ratio (95% CI) | Geometric mean |
+|---|---:|---:|---:|---:|
+| WikiText-2 test | 0.9644 (0.9398–0.9898) | 0.9699 (0.9449–0.9967) | 0.9681 (0.9434–0.9942) | **0.9675** |
+| PG-19 validation | 0.8787 (0.8512–0.9076) | 0.8638 (0.8365–0.8918) | 0.8711 (0.8446–0.8984) | **0.8712** |
+
+Every interval is below parity, so the predeclared less-than-2% perplexity gate passes
+for both corpora and all seeds. This is robust evidence for raw-text likelihood
+recovery on these two distributions. It is not evidence of improved general quality:
+instruction following, long-range retrieval, and broad downstream behavior remain
+untested and are the next gate before expanding the conversion.

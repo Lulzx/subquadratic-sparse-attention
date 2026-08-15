@@ -41,9 +41,10 @@ MLX standard operations are fast enough to validate the design, but hash, gather
 3. **Semantic routing loss**: distill bucket agreement from fixed-window dense attention or labeled retrieval positions.
 4. **Custom Metal selector**: replace sorting with append-only bucket tails and benchmark true expected-linear prefill/decode behavior.
 5. **Persistent decode cache**: verify token-by-token outputs against parallel causal prefill.
-6. **Natural-language retrieval**: evaluate passkey, variable-length needle, and RULER-style tasks.
-7. **Pretrained-model surgery**: replace attention in a genuinely small open MLX model and measure perplexity recovery.
-8. **Dense matched control**: train a dense MLX model with the same initialization, untied output, curriculum, and optimizer.
+6. **Natural-language retrieval**: evaluate passkey, variable-length needle, lexical mismatch, and RULER-style tasks before converting layer 10.
+7. **Instruction-behavior gate**: compare dense and recovered LFM2.5 on a fixed prompt suite; raw-text perplexity alone cannot establish preserved instruction following.
+8. **Additional attention layers**: after both behavior gates pass, convert layers 10, 8, 5, and 2 one at a time and rerun all gates.
+9. **Dense matched control**: train a dense MLX model with the same initialization, untied output, curriculum, and optimizer.
 
 ## Evidence standard
 

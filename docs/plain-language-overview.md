@@ -45,8 +45,11 @@ activations are cached once and reused. The current one-layer conversion peaks n
 - Completed three-seed joint recovery of both layers using only 1.39 GB peak MLX
   memory. An initial 4,096-token slice appeared equal to dense, but a stronger paired
   audit over 65,536 tokens per corpus finds 1.1100 times dense perplexity on WikiText
-  and 0.9945 times on PG-19. The larger result supersedes the small-slice conclusion:
-  quality parity has not yet been established.
+  and 0.9945 times on PG-19. That invalidated the original recovery objective.
+- Recovered the two-layer model again by teaching it to match the dense model's output
+  probabilities on mixed WikiText and PG-19 data. Across three seeds, the larger audit
+  now measures 0.9675 times dense perplexity on WikiText and 0.8712 times on PG-19.
+  Every confidence interval passes the 2% gate, at 1.61 GB peak MLX memory.
 
 ## What this does not prove yet
 
@@ -60,10 +63,11 @@ activations are cached once and reused. The current one-layer conversion peaks n
 
 ## What comes next
 
-The immediate target is broader mixed-corpus recovery of layers 12 and 14. Layer 10
-must wait until the larger WikiText regression is below the quality threshold. After
-every new layer, individual and combined quality must be measured before proceeding
-to layers 8, 5, and 2. Only
+The immediate target is proving that the recovered model still follows instructions
+and retrieves distant information. The raw-text quality gate has passed, but it does
+not establish those behaviors. Layer 10 can proceed only after the retrieval and
+instruction checks pass. After every new layer, individual and combined quality must
+be measured before proceeding to layers 8, 5, and 2. Only
 after all six attention layers survive conversion should the project focus on a
 persistent decode cache, strict linear-time indexing, broad benchmarks, and real
 end-to-end speedups.

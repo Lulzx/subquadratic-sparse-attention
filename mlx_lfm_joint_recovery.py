@@ -13,6 +13,7 @@ from mlx_lm import load
 
 from mlx_donor_router import DonorHashRouter, language_body
 from mlx_lfm_multilayer_eval import parse_layers
+from mlx_lfm_quality_eval import pg19_tokens
 from mlx_lfm_replacement import GatedLFMReplacement, perplexity, wikitext_tokens
 
 
@@ -22,6 +23,38 @@ def hidden_targets(body, token_batches):
         hidden = mx.stop_gradient(body(tokens))
         mx.eval(hidden)
         targets.append(hidden)
+    return targets
+
+
+def teacher_distribution_targets(model, token_batches, topk):
+    targets = []
+    for batch_index, tokens in enumerate(token_batches):
+        logits = model(tokens[:, :-1]).astype(mx.float32)
+        indices = mx.argpartition(logits, kth=-topk, axis=-1)[..., -topk:]
+        selected_logits = mx.take_along_axis(logits, indices, axis=-1)
+        log_normalizer = mx.logsumexp(logits, axis=-1, keepdims=True)
+        probability = mx.exp(selected_logits - log_normalizer)
+        other_probability = mx.maximum(
+            1.0 - mx.sum(probability, axis=-1), mx.array(1e-8)
+        )
+        mx.eval(indices, probability, other_probability)
+        targets.append(
+            (
+                np.array(indices),
+                np.array(probability.astype(mx.float16)),
+                np.array(other_probability.astype(mx.float16)),
+            )
+        )
+        del (
+            logits,
+            indices,
+            selected_logits,
+            log_normalizer,
+            probability,
+            other_probability,
+        )
+        if (batch_index + 1) % 8 == 0:
+            mx.clear_cache()
     return targets
 
 
@@ -56,6 +89,8 @@ def main():
     parser.add_argument("--seq-len", type=int, default=256)
     parser.add_argument("--train-segments", type=int, default=32)
     parser.add_argument("--eval-segments", type=int, default=8)
+    parser.add_argument("--pg19-train-segments", type=int, default=0)
+    parser.add_argument("--pg19-eval-segments", type=int, default=0)
     parser.add_argument("--quality-segments", type=int, default=16)
     parser.add_argument("--window", type=int, default=32)
     parser.add_argument("--sink-tokens", type=int, default=4)
@@ -65,6 +100,11 @@ def main():
     parser.add_argument("--probes", type=int, default=1)
     parser.add_argument("--steps", type=int, default=500)
     parser.add_argument("--lr", type=float, default=1e-6)
+    parser.add_argument(
+        "--objective", choices=["final_hidden", "lm", "kl"], default="final_hidden"
+    )
+    parser.add_argument("--teacher-topk", type=int, default=64)
+    parser.add_argument("--lm-weight", type=float, default=0.0)
     parser.add_argument("--log-every", type=int, default=100)
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--output", default="")
@@ -76,8 +116,23 @@ def main():
     body = language_body(model)
     train_tokens = wikitext_tokens(tokenizer, "train", args.seq_len, args.train_segments)
     eval_tokens = wikitext_tokens(tokenizer, "validation", args.seq_len, args.eval_segments)
+    if args.pg19_train_segments:
+        train_tokens += pg19_tokens(
+            tokenizer, "train", args.seq_len, args.pg19_train_segments
+        )
+    if args.pg19_eval_segments:
+        eval_tokens += pg19_tokens(
+            tokenizer, "validation", args.seq_len, args.pg19_eval_segments
+        )
+    permutation = np.random.default_rng(args.seed).permutation(len(train_tokens))
+    train_tokens = [train_tokens[index] for index in permutation]
     quality_tokens = wikitext_tokens(tokenizer, "test", args.seq_len, args.quality_segments)
-    train_targets = hidden_targets(body, train_tokens)
+    if args.objective == "final_hidden":
+        train_targets = hidden_targets(body, train_tokens)
+    elif args.objective == "kl":
+        train_targets = teacher_distribution_targets(model, train_tokens, args.teacher_topk)
+    else:
+        train_targets = None
     eval_targets = hidden_targets(body, eval_tokens)
     dense_quality = perplexity(model, quality_tokens)
 
@@ -105,6 +160,30 @@ def main():
     optimizer = optim.AdamW(learning_rate=args.lr, weight_decay=0.01)
 
     def loss_fn(current_model, tokens, target):
+        if args.objective == "lm":
+            logits = current_model(tokens[:, :-1])
+            return nn.losses.cross_entropy(logits, tokens[:, 1:], reduction="mean")
+        if args.objective == "kl":
+            indices, teacher_probability, teacher_other_probability = target
+            logits = current_model(tokens[:, :-1]).astype(mx.float32)
+            log_normalizer = mx.logsumexp(logits, axis=-1, keepdims=True)
+            selected_log_probability = (
+                mx.take_along_axis(logits, indices, axis=-1) - log_normalizer
+            )
+            selected_probability = mx.exp(selected_log_probability)
+            other_log_probability = mx.log(mx.maximum(
+                1.0 - mx.sum(selected_probability, axis=-1), mx.array(1e-8)
+            ))
+            distillation = -mx.mean(
+                mx.sum(teacher_probability * selected_log_probability, axis=-1)
+                + teacher_other_probability * other_log_probability
+            )
+            if args.lm_weight:
+                language_loss = nn.losses.cross_entropy(
+                    logits, tokens[:, 1:], reduction="mean"
+                )
+                distillation = distillation + args.lm_weight * language_loss
+            return distillation
         predicted = language_body(current_model)(tokens).astype(mx.float32)
         target = target.astype(mx.float32)
         mse = mx.mean(mx.square(predicted - target))
@@ -115,13 +194,17 @@ def main():
     started = time.perf_counter()
     for step in range(1, args.steps + 1):
         index = (step - 1) % len(train_tokens)
-        loss, gradients = loss_and_grad(model, train_tokens[index], train_targets[index])
+        target = train_targets[index] if train_targets is not None else mx.array(0.0)
+        if args.objective == "kl":
+            target = tuple(mx.array(value) for value in target)
+        loss, gradients = loss_and_grad(model, train_tokens[index], target)
         optimizer.update(model, gradients)
         mx.eval(model.trainable_parameters(), optimizer.state, loss)
         if step == 1 or step % args.log_every == 0 or step == args.steps:
             print(json.dumps({
                 "step": step,
-                "normalized_final_hidden_mse": round(float(loss), 6),
+                "objective": args.objective,
+                "loss": round(float(loss), 6),
                 "steps_per_second": round(step / (time.perf_counter() - started), 3),
                 "peak_memory_mb": round(mx.get_peak_memory() / 2**20, 2),
             }), flush=True)
