@@ -256,9 +256,13 @@ Benchmark the memory-bounded MLX paths:
 ```bash
 python3 mlx_selector.py
 python3 mlx_attention_bench.py
+python3 validate_scaling.py
 ```
 
-All benchmark commands have conservative default context limits. See [memory safety](docs/memory-safety.md) before overriding them.
+All benchmark commands have conservative default context limits. The unified
+validation command writes JSON and Markdown reports under `runs/` and includes a
+safely capped dense reference plus a controlled collision-capacity sweep. See
+[memory safety](docs/memory-safety.md) before overriding the limits.
 
 ## Documentation
 
@@ -300,6 +304,7 @@ lfm_embedding_router.py # LFM2.5 semantic block embeddings into multiprobe hashe
 mlx_selector.py         # selector benchmark
 mlx_attention_bench.py  # selected-attention benchmark
 capacity_scaling.py     # constant-memory idealized hash-capacity calculator
+validate_scaling.py     # finite scaling, capacity, dense-reference, and causality report
 replicate.py            # arithmetic audit of public model-card tables
 docs/                   # complete technical record
 ```

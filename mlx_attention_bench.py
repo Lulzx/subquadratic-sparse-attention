@@ -8,16 +8,22 @@ from ssa.mlx_attention import random_weights, sparse_attention_chunked
 
 
 def timed(x, weights, heads, repeats, chunk_q):
-    mx.eval(sparse_attention_chunked(x, *weights, heads=heads, chunk_q=chunk_q)[0])
+    warm_output, warm_selected = sparse_attention_chunked(
+        x, *weights, heads=heads, chunk_q=chunk_q
+    )
+    mx.eval(warm_output, warm_selected)
     mx.synchronize()
-    samples, output = [], None
+    del warm_output, warm_selected
+    samples, output, selected = [], None, None
     for _ in range(repeats):
         started = time.perf_counter()
-        output, _ = sparse_attention_chunked(x, *weights, heads=heads, chunk_q=chunk_q)
-        mx.eval(output)
+        output, selected = sparse_attention_chunked(
+            x, *weights, heads=heads, chunk_q=chunk_q
+        )
+        mx.eval(output, selected)
         mx.synchronize()
         samples.append((time.perf_counter() - started) * 1000)
-    return sorted(samples)[len(samples) // 2], output
+    return sorted(samples)[len(samples) // 2], output, selected
 
 
 def main():
@@ -36,15 +42,18 @@ def main():
             continue
         mx.reset_peak_memory()
         x = mx.random.normal((1, length, args.width)).astype(mx.float16)
-        milliseconds, output = timed(x, weights, args.heads, args.repeats, args.chunk_q)
+        milliseconds, output, selected = timed(
+            x, weights, args.heads, args.repeats, args.chunk_q
+        )
         print(json.dumps({
             "length": length,
             "milliseconds": round(milliseconds, 3),
             "output_shape": list(output.shape),
+            "selected_per_query": int(selected.shape[-1]),
             "active_memory_mb": round(mx.get_active_memory() / 2**20, 2),
             "peak_memory_mb": round(mx.get_peak_memory() / 2**20, 2),
         }), flush=True)
-        del x, output
+        del x, output, selected
         mx.clear_cache()
 
 

@@ -14,6 +14,7 @@ That run produced useful evidence—dense attention exhausted memory while the s
 | `bench.py` PyTorch SSA | 16,384 tokens |
 | `mlx_selector.py` | 16,384 tokens |
 | `mlx_attention_bench.py` | 16,384 tokens |
+| `validate_scaling.py` sparse / dense | 16,384 / 8,192 tokens |
 | `mlx_evaluate.py` | 4,096 tokens |
 | LFM2.5 recovery/quality/behavior scripts | 1,792 MB MLX working-set limit |
 

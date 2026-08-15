@@ -387,6 +387,21 @@ python3 mlx_attention_bench.py
 
 Both commands default to a maximum of 16K. Do not override the cap without reading [memory safety](memory-safety.md).
 
+Run the unified finite-range validation harness to benchmark the selector, gathered
+sparse attention, a safely capped dense reference, the real selector under matched
+collision pressure, and the mutation-based causality suite:
+
+```bash
+python3 validate_scaling.py
+```
+
+It writes machine-readable JSON and a Markdown report under `runs/`. The latency
+report fits `n`, `n log n`, and `n^2` models and reports doubling ratios; these are
+finite-range diagnostics rather than a proof of Big-O. The capacity sweep uses exact
+copied query/key vectors and multiple independent seeds, so it tests collision-tail
+behavior in the implemented selector but does not substitute for learned-router
+agreement, occupancy, attention-mass, or language-quality evaluation.
+
 ## Idealized hash-capacity calculation
 
 Run the constant-memory mathematical baseline:

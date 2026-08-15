@@ -132,6 +132,63 @@ def test_multiprobe_causality():
     print("PASS multiprobe selector causality under future mutation")
 
 
+def test_selector_causality_matrix():
+    """Cover batches, table counts, probes, distance boundaries, and successors."""
+    rng = np.random.default_rng(29)
+    length, width = 33, 8
+    original = rng.standard_normal((2, length, width), dtype=np.float32)
+    projection_np = rng.standard_normal((width, 12), dtype=np.float32)
+    projection = mx.array(projection_np.tolist(), dtype=mx.float32)
+    for batch in (1, 2):
+        for tables, bits, probes in ((1, 4, 1), (3, 4, 3)):
+            table_projection = projection[:, : tables * bits]
+            for block in (False, True):
+                for min_distance in (0, 4):
+                    for boundary in (1, 4, 8, 16, 32):
+                        before_np = original[:batch].copy()
+                        after_np = before_np.copy()
+                        after_np[:, boundary:] = rng.standard_normal(
+                            (batch, length - boundary, width), dtype=np.float32
+                        )
+                        before = select_indices_qk(
+                            mx.array(before_np.tolist(), dtype=mx.float32),
+                            mx.array(before_np.tolist(), dtype=mx.float32),
+                            table_projection,
+                            table_projection,
+                            tables=tables,
+                            bits=bits,
+                            members=2,
+                            probes=probes,
+                            block=block,
+                            min_distance=min_distance,
+                        )
+                        after = select_indices_qk(
+                            mx.array(after_np.tolist(), dtype=mx.float32),
+                            mx.array(after_np.tolist(), dtype=mx.float32),
+                            table_projection,
+                            table_projection,
+                            tables=tables,
+                            bits=bits,
+                            members=2,
+                            probes=probes,
+                            block=block,
+                            min_distance=min_distance,
+                        )
+                        mx.eval(before, after)
+                        before_selected = np.array(before)
+                        np.testing.assert_array_equal(
+                            before_selected[:, :boundary], np.array(after)[:, :boundary]
+                        )
+                        for query_position in range(boundary):
+                            valid = before_selected[:, query_position]
+                            valid = valid[valid >= 0]
+                            if block:
+                                assert np.all(valid <= query_position - min_distance)
+                            else:
+                                assert np.all(valid < query_position - min_distance)
+    print("PASS selector causality matrix across boundaries, batches, tables, and probes")
+
+
 def test_semantic_selector_parity_and_causality():
     rng = np.random.default_rng(11)
     x_np = rng.standard_normal((2, 32, 8), dtype=np.float32)
@@ -301,6 +358,7 @@ if __name__ == "__main__":
     test_multiprobe_neighbor()
     test_length_curriculum()
     test_multiprobe_causality()
+    test_selector_causality_matrix()
     test_semantic_selector_parity_and_causality()
     test_block_selector_causality()
     test_causal_global_slots()
