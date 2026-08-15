@@ -34,6 +34,7 @@ The measured baseline combines causal sliding-window attention with content-addr
 | MQAR mean accuracy at the former 4K frontier | **97.03%** |
 | MQAR accuracy at 16K after an 8K fine-tuning stage | **97.38%** |
 | LFM2.5 one-layer sparse replacement perplexity penalty | **+1.64% mean** |
+| LFM2.5 two-layer model after joint recovery | **0.9935× dense perplexity** |
 
 The model was trained at 128 tokens and evaluated without further training:
 
@@ -165,6 +166,7 @@ All benchmark commands have conservative default context limits. See [memory saf
 | [Experiments and results](docs/experiments.md) | Exact protocols, tables, environment, and interpretation |
 | [Model-card claim audit](docs/model-card-audit.md) | What the SubQ report's public arithmetic supports and what cannot be reproduced |
 | [Replication ledger and roadmap](docs/replication-roadmap.md) | Claim status, recent research, donor plan, and Mac-local milestones |
+| [Plain-language overview](docs/plain-language-overview.md) | What the project does, why it fits on a laptop, and what remains |
 | [Reproduction guide](docs/reproduction.md) | Installation and every safe command |
 | [Memory safety](docs/memory-safety.md) | Guardrails added after an unsafe dense allocation |
 | [Design history](docs/design-history.md) | Failed fixed-bucket design and the LSH pivot |
@@ -183,6 +185,8 @@ mlx_train.py            # MLX training entrypoint
 mlx_evaluate.py         # held-out and length-extrapolation evaluation
 mlx_donor_router.py     # frozen-LM attention distillation into binary hash routing
 mlx_lfm_replacement.py  # gated one-layer LFM2.5 sparse conversion and evaluation
+mlx_lfm_multilayer_eval.py # individual and combined converted-layer evaluation
+mlx_lfm_joint_recovery.py  # final-hidden alignment for multiple sparse layers
 lfm_embedding_router.py # LFM2.5 semantic block embeddings into multiprobe hashes
 mlx_selector.py         # selector benchmark
 mlx_attention_bench.py  # selected-attention benchmark

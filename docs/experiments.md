@@ -328,3 +328,33 @@ This partially reproduces pretrained-model conversion with small quality loss, b
 is not total replication: only one of six attention layers is replaced, the test set
 is small, no RULER/NIAH or general capability suite has run, incremental decoding is
 absent, and portable bucket construction still sorts.
+
+## LFM2.5 two-layer composition and joint recovery
+
+Layer 12 was converted with the same protocol as layer 14. Its router is stronger:
+hard teacher top-1 recall rises from 19.71% to 49.16%, and retained teacher mass from
+14.56% to 29.69%. Independent sparse alignment reduces layer-12 attention NRMSE from
+0.2512 to 0.2151 and full-layer NRMSE from 0.1216 to 0.1038. Its mean standalone
+perplexity ratio is 0.9890; this small apparent improvement is treated as test noise or
+regularization, not a capability claim.
+
+Loading independently aligned layers 12 and 14 together gives these three-seed ratios:
+
+| Seed | Layer 12 only | Layer 14 only | Both before recovery | Both after recovery |
+|---:|---:|---:|---:|---:|
+| 0 | 0.9922 | 1.0118 | 0.9961 | **0.9883** |
+| 1 | 0.9826 | 1.0277 | 1.0237 | **0.9980** |
+| 2 | 0.9922 | 1.0098 | 1.0157 | **0.9942** |
+| Mean | 0.9890 | 1.0164 | 1.0119 | **0.9935** |
+
+Joint recovery runs 500 steps over 32 WikiText training segments. It keeps the entire
+donor frozen and trains only the two sparse attention copies against cached dense final
+hidden states. Held-out final-hidden NRMSE improves from 0.2638 to 0.2619, and cosine
+from 0.9640 to 0.9644. All zero-gate loss deltas remain exactly zero. Peak MLX memory is
+1.39 GB, and each seed takes roughly half a minute after data/model loading.
+Reloading every jointly recovered checkpoint into a fresh donor reproduces each final
+test loss exactly.
+
+The result shows that two independently converted layers can be repaired together on
+the local Mac without a measured loss on this small WikiText slice. It does not show
+general quality improvement, long-context task retention, or runtime acceleration.

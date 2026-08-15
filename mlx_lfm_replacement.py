@@ -225,7 +225,7 @@ def main():
     parser.add_argument("--eval-files", default="")
     parser.add_argument("--log-every", type=int, default=50)
     parser.add_argument("--seed", type=int, default=0)
-    parser.add_argument("--output", default="runs/lfm2.5-layer14-replacement.safetensors")
+    parser.add_argument("--output", default="")
     args = parser.parse_args()
     if args.window < 1 or args.window >= args.seq_len:
         parser.error("--window must be positive and smaller than --seq-len")
@@ -265,7 +265,7 @@ def main():
     eval_examples = layer_inputs_and_targets(model, eval_tokens, args.layer)
     layer = body.layers[args.layer]
     router = DonorHashRouter(config["hidden_size"], args.tables, args.bits)
-    router_path = args.router or f"runs/lfm2.5-layer14-router-seed{args.seed}.safetensors"
+    router_path = args.router or f"runs/lfm2.5-layer{args.layer}-router-seed{args.seed}.safetensors"
     if not pathlib.Path(router_path).is_file():
         raise FileNotFoundError(
             f"router checkpoint not found: {router_path}; run mlx_donor_router.py first"
@@ -313,10 +313,14 @@ def main():
     replacement.replacement_alpha = 1.0
     sparse_quality = perplexity(model, quality_tokens)
 
-    output = pathlib.Path(args.output)
+    output = pathlib.Path(
+        args.output
+        or f"runs/lfm2.5-layer{args.layer}-replacement-wikitext-seed{args.seed}.safetensors"
+    )
     output.parent.mkdir(parents=True, exist_ok=True)
     replacement.save_weights(str(output))
     result = vars(args) | {
+        "output_resolved": str(output),
         "router_resolved": router_path,
         "train_files_resolved": [str(path) for path in train_paths],
         "eval_files_resolved": [str(path) for path in eval_paths],

@@ -34,7 +34,7 @@ That is an audit result, not 67 replicated model claims.
 | 2 | End-to-end linear selection and attention | Partial | Attention reads fixed `K=32`; portable bucket construction still sorts in `O(n log n)`. |
 | 3 | Linear memory scaling | Partial | Selected attention has bounded reads and measured memory through 16K, not millions of tokens. |
 | 4 | Full-context training and ordinary autoregressive operation | Partial | Parallel causal prefill works; a persistent incremental decode cache is absent. |
-| 5 | Conversion of a dense pretrained donor without losing language quality | Partial | LFM2.5 layer 14 is replaced and aligned across three seeds with a 1.64% mean WikiText perplexity penalty; five attention layers and broader quality evaluations remain. |
+| 5 | Conversion of a dense pretrained donor without losing language quality | Partial | LFM2.5 layers 12 and 14 are replaced; three-seed joint recovery has a 0.9935 mean WikiText perplexity ratio on the current test slice. Four attention layers and broader evaluations remain. |
 | 6 | 64.5x FLOP reduction at 1M | Arithmetic only | `252 / 3.9 = 64.6`; undisclosed dimensions prevent an absolute rerun. |
 | 7 | 56x attention-layer wall-clock speedup at 1M | Arithmetic only | `54,164 / 966 = 56.07`; no matched H100 run exists. |
 | 8 | RULER average 99.12 at 128K | Not reproduced | The public benchmark has not yet been integrated. |
@@ -242,13 +242,14 @@ budget, latency, peak memory, and failure by retrieval distance.
 
 ### Stage C: pretrained language-model conversion
 
-LFM2.5-350M is now the primary donor. The first conversion replaces only attention
-layer 14 while preserving all convolution, MLP, normalization, embedding, and output
-components. Across three router seeds, 1,000 WikiText alignment steps reduce held-out
-attention NRMSE from 0.3392 to 0.2757 and leave a 1.64% mean perplexity penalty on
-4,096 disjoint WikiText test tokens. Peak MLX memory is 1.15 GB. The zero gate exactly
-reproduces donor loss. Establish broader short-context quality parity before replacing
-the remaining five attention layers or extending context.
+LFM2.5-350M is now the primary donor. Layers 12 and 14 are independently converted
+while every convolution, MLP, normalization, embedding, and output component remains
+frozen. Joint final-hidden recovery trains only those two sparse branches. Across three
+seeds it moves their combined mean WikiText perplexity ratio from 1.0119 to 0.9935 on
+4,096 disjoint test tokens and peaks at 1.39 GB of MLX memory. The zero gate exactly
+reproduces donor loss. This is no measured loss on a small slice, not evidence that
+sparsity improves general quality. Convert layer 10 next, then repeat combined recovery
+and broader evaluation before progressing to layers 8, 5, and 2.
 Afterward, run language-model retrieval benchmarks, then general capability benchmarks.
 GPQA, LiveCodeBench, and AutomationBench belong at the end of this sequence; they cannot
 diagnose router quality in a tiny synthetic model.

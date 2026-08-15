@@ -187,6 +187,26 @@ attention and asserts exact loss equality. At gate one it skips the dense branch
 executes the sparse replacement. The current path evaluates parallel causal prefill;
 incremental sparse decoding remains unimplemented.
 
+### Two-layer composition and joint recovery
+
+Train layer 12 with the same router and replacement commands by adding `--layer 12`
+and layer-specific output paths. Measure both independently converted layers together:
+
+```bash
+python3 mlx_lfm_multilayer_eval.py --layers 12,14 --seed 0
+```
+
+Then train only their sparse branches against cached dense final hidden states:
+
+```bash
+python3 mlx_lfm_joint_recovery.py \
+  --layers 12,14 --steps 500 --lr 1e-6 --seed 0
+```
+
+Repeat both commands for seeds 1 and 2. The joint stage freezes the complete donor,
+including dense fallback branches, and unfreezes only the copied sparse Q/K/V/O
+projections. Its zero-gate check must remain exactly equal to dense loss.
+
 ### Historical SmolLM2 baseline
 
 The first natural-language routing experiment downloads the approximately 257 MB BF16
