@@ -35,8 +35,8 @@ The measured baseline combines causal sliding-window attention with content-addr
 | MQAR accuracy at 16K after an 8K fine-tuning stage | **97.38%** |
 | LFM2.5 one-layer sparse replacement perplexity penalty | **+1.64% mean** |
 | LFM2.5 two-layer model after KL recovery, 65K-token audit | **0.9675× WikiText / 0.8712× PG-19** |
-| LFM2.5 three-seed retrieval preservation after router supervision | **57 / 78 dense-pass cases** |
-| LFM2.5 three-seed completed-block retrieval preservation | **64 / 78 dense-pass cases** |
+| LFM2.5 expanded 1K retrieval gate, best aggregate | **132 / 189 dense-pass trials** |
+| LFM2.5 exact retrieval in expanded gate | **54 / 54 per sparse variant** |
 
 The model was trained at 128 tokens and evaluated without further training:
 
@@ -73,11 +73,50 @@ the remaining gap to end-to-end replication.
 A new paired behavior gate exposes what perplexity misses. Before retrieval-specific
 router training, the sparse two-layer model preserves only 3 of 26 natural-language
 retrieval cases that dense LFM2.5 answers. Streaming supervision of the router's source
-positions raises three-seed preservation to 19/26, 21/26, and 17/26. Exact passkeys
-are 27/27 and dense-pass lexical-mismatch cases are 24/24 across seeds at every tested
-256–1,024-token length and position. Long multi-token values remain the clear failure
-at 6/27. The corresponding large-audit geometric means are 1.0091× dense perplexity
-on WikiText and 0.8990× on PG-19.
+positions with recent-tail selection raises three-seed preservation to 57/78. Keeping
+a fixed-budget midpoint-history slot active during router retraining raises this to
+**68/78 at `K=32`**, including 17/27 long multi-token values. Exact passkeys remain
+27/27 and dense-pass lexical-mismatch cases remain 24/24 across all tested 256–1,024-
+token lengths and positions. The gain is seed-dependent: long-value results are 8/9,
+0/9, and 9/9. The corresponding large-audit geometric means are 1.0072× dense
+perplexity on WikiText and 0.8973× on PG-19.
+
+That small-suite gain does not survive the expanded generalization gate. A fixed
+manifest adds three unseen values and two prompt templates for each of exact,
+lexical-mismatch, multi-token, and NIAH-style retrieval, with three source positions.
+At 1K, dense LFM2.5 passes 63/72 cases. Across three sparse seeds, recent `K=32`
+preserves **132/189** dense-pass trials (69.84%), hybrid `K=32` preserves 127/189
+(67.20%), and completed-block `K=64` preserves 111/189 (58.73%). All three preserve
+54/54 exact trials. Hybrid is strongest on NIAH-style retrieval, block routing is
+strongest on multi-token values, and recent routing is strongest overall. A single
+4K dense probe peaks at 2.82 GB and a hybrid probe at 2.48 GB, above the repository's
+1.792 GB operating limit, so 4K, 8K, and 16K are not claimed for this partially
+converted model.
+
+### Routing-only index milestone
+
+A separate synthetic routing benchmark now isolates the selector bottleneck from KV
+gather and attention. On an M4 Pro, one-query FP16 and packed 64-bit full scans grow
+14.58x and 11.35x respectively from 16K to 2M keys. A persistent four-table direct-
+address prototype with two probes, a bounded 128-entry pool, Hamming reranking, and
+final `K=32` stays flat at 0.94x. At 2M it routes in 342.9 us versus 3,157.9 us for
+FP16 and 3,334.2 us for the binary scan, while its logical historical-index read is
+1.5 KiB/query instead of 256 MiB or 16 MiB. The fixed bucket capacity is not enough:
+needle recall falls to 53.12%, and overlap with the FP top 32 is only 2.10% at 2M.
+This demonstrates bounded lookup over the tested range
+in a synthetic prototype; it does not establish general attention quality, production decode
+performance, or an end-to-end model speedup.
+
+![Routing-only scaling and recall](docs/assets/routing-scan-scaling.svg)
+
+A matched retention ablation confirms that bucket storage, rather than address
+agreement, is the immediate scaling limit. At 2M, capacity-64 tail retention reaches
+92.19% needle recall at 309.9 us and 6 KiB/query. The best tested point at the proposed
+3 KiB ceiling is capacity-32 reservoir retention: 85.94% at 299.9 us. A fingerprint-
+subslot policy performs worse. The target of at least 95% recall, at most 3 KiB/query,
+and at most 350 us/query therefore remains open.
+
+![Bucket-retention recall/traffic tradeoff](docs/assets/bucket-retention-tradeoff.svg)
 
 The active donor pair is now current-generation Liquid AI: the causal
 [LFM2.5-350M](https://huggingface.co/LiquidAI/LFM2.5-350M) supplies language-model

@@ -338,11 +338,59 @@ also keeps exactly 32 slots. Hybrid recall is 37% versus 23% at 4K, 17% versus 0
 8K, and 7% versus 0% at 16K. Its 16K peak MLX allocation is 57.02 MB versus 53.27 MB.
 The nine-repeat latency measurements are noisy and do not support a speed claim.
 
+The improvement does not transfer as a post-hoc policy switch in the converted
+two-layer LFM2.5 behavior gate. On the existing token-router checkpoints, which were
+trained and recovered with recent-tail selection, hybrid 0.5 produces:
+
+| Policy | Exact | Dense-pass lexical | 13-token variable | All dense-pass cases |
+|---|---:|---:|---:|---:|
+| Recent | **27/27** | **24/24** | **6/27** | **57/78** |
+| Hybrid 0.5 | **27/27** | **24/24** | 3/27 | 54/78 |
+
+All six dense-pass instruction cases remain preserved. Mean sparse-minus-dense answer
+loss across seeds also rises from 0.1313 to 0.1414. Hybrid is therefore rejected as
+an inference-only production switch.
+
+Retraining the token routers with hybrid selection active changes the result. Starting
+from the same joint-KL-recovered sparse branches and using the same 300-step source-
+position curriculum gives:
+
+| Seed | Recent variable / all | Hybrid-trained variable / all |
+|---:|---:|---:|
+| 0 | 2/9 / 19/26 | **8/9 / 25/26** |
+| 1 | **4/9 / 21/26** | 0/9 / 17/26 |
+| 2 | 0/9 / 17/26 | **9/9 / 26/26** |
+| **Total** | 6/27 / 57/78 | **17/27 / 68/78** |
+
+Exact retrieval remains 27/27, dense-pass lexical retrieval remains 24/24, and all
+six dense-pass instruction cases remain preserved. The hybrid-trained `K=32` result
+also exceeds the completed-block `K=64` result of 13/27 long values and 64/78 overall.
+Mean sparse-minus-dense answer loss falls to 0.0193. The gain is not uniform: seed 1
+loses all four of its recent-policy long-value successes, so the aggregate improvement
+must not be presented as seed-independent.
+
+The matching 65,536-token paired quality audit passes the existing gate:
+
+| Seed | WikiText-2 ratio (95% CI) | PG-19 ratio (95% CI) |
+|---:|---:|---:|
+| 0 | 0.9989 (0.9740–1.0247) | 0.8970 (0.8693–0.9258) |
+| 1 | 1.0187 (0.9931–1.0460) | 0.9000 (0.8719–0.9291) |
+| 2 | 1.0042 (0.9793–1.0306) | 0.8949 (0.8680–0.9229) |
+| **Geometric mean** | **1.0072** | **0.8973** |
+
+Every WikiText point estimate remains within 2% of dense, although the seed-1
+confidence interval does not rule out a larger regression. Router training peaks at
+1.25 GB, behavior evaluation at 1.60 GB, and quality evaluation at 1.38 GB of MLX
+allocator memory. Only the routers were retrained: the sparse attention branches still
+come from recovery under recent-tail selection. Hybrid-aware sparse recovery remains
+untested.
+
 [BinaryPC](https://arxiv.org/abs/2608.04405) independently supports data-aware binary
 codes and a small error-aware safeguard for hard-to-hash tokens. Its global Hamming
 top-k scan is not adopted here because it would reintroduce quadratic query-by-history
-work in the current portable implementation. The hybrid history slot is the adopted
-fixed-budget safeguard; it does not add a global scan or change completed-block mode.
+work in the current portable implementation. The hybrid history slot is an opt-in
+fixed-budget selector intervention; it does not add a global scan or change
+completed-block mode.
 
 These are selector and objective ablations for a standalone trained router. They do
 not replace the existing perplexity and behavior gates for converted models. Reproduce
@@ -576,3 +624,134 @@ The 65,536-token paired quality audit gives:
 Block-router training peaks at 1.24 GB, retrieval SFT at 1.44 GB, the quality audit at
 1.46 GB, and the full 1,024-token behavior matrix at 1.64 GB. The block result is
 replicated, but 13/27 long-value accuracy remains below the acceptance target.
+
+### Expanded retrieval-generalization gate
+
+The earlier 27-case suite reused one value and one template per task. A deterministic
+manifest now crosses four task families with three unseen values, two prompt templates,
+three source positions, and target lengths 1K, 4K, 8K, and 16K. The values are disjoint
+from router training. The manifest contains 288 cases and has SHA-256
+`8a97bd71eb1844657fa8161ba7986f85d34a6ba03213b9bd3e3836bc74bd45da`.
+
+Only the 72 1K cases are memory-approved on the local machine. Dense LFM2.5 passes all
+18 exact, 18 multi-token, and 18 NIAH-style cases, but only 9/18 lexical-mismatch cases:
+one paraphrase template fails for every value and position. Sparse preservation is
+therefore measured only on the 63 cases the dense donor passes. Each variant evaluates
+the same cases under seeds 0, 1, and 2, giving 189 dense-pass trials.
+
+| Variant | Budget | Preserved | Accuracy | Wilson 95% CI |
+|---|---:|---:|---:|---:|
+| Recent token routing | 32 | **132/189** | **69.84%** | 62.96–75.94% |
+| Hybrid-history token routing | 32 | 127/189 | 67.20% | 60.22–73.49% |
+| Completed-block routing | 64 | 111/189 | 58.73% | 51.61–65.51% |
+
+The aggregate recent and hybrid intervals overlap. Their task profiles differ more
+than their totals:
+
+| Variant | Exact | Dense-pass lexical | Multi-token | NIAH-style |
+|---|---:|---:|---:|---:|
+| Recent K=32 | **54/54** | 26/27 | 11/54 | 41/54 |
+| Hybrid K=32 | **54/54** | 22/27 | 7/54 | **44/54** |
+| Block K=64 | **54/54** | **27/27** | **22/54** | 8/54 |
+
+The result also varies by checkpoint seed:
+
+| Variant | Seed 0 | Seed 1 | Seed 2 | Seed standard deviation |
+|---|---:|---:|---:|---:|
+| Recent K=32 | 41/63 | 39/63 | **52/63** | 9.07 points |
+| Hybrid K=32 | 41/63 | 38/63 | 48/63 | 6.65 points |
+| Block K=64 | 34/63 | 37/63 | 40/63 | 3.89 points |
+
+Recent routing preserves 44/63 cases in each near, middle, and far distance band.
+Hybrid preserves 41/63 near, 40/63 middle, and 46/63 far; the midpoint history slot
+does not produce a uniform distance gain. Block routing preserves 40/63 near, 35/63
+middle, and 36/63 far. Value- and template-level results are included in the generated
+JSON and Markdown reports.
+
+A one-case dense 4K probe completes but peaks at 2.82 GB; a hybrid K=32 probe peaks at
+2.48 GB. Both exceed the 1.792 GB operating limit. Recent and block 4K runs are not
+attempted after those failures, and 8K/16K are skipped for every variant. This is an
+explicit resource exclusion, not a retrieval result. At 1K, observed peaks are 1.58 GB
+for dense, 1.48 GB for token routing, and 1.66 GB for block routing.
+
+The expanded gate rejects the earlier implication that hybrid training is the best
+general policy. Hybrid helps NIAH-style retrieval, block routing helps complete
+multi-token values, and recent routing is strongest overall. No variant preserves
+enough broad behavior to justify converting layer 10. These are local NIAH- and
+NoLiMa-style diagnostics, not results on the public NIAH, NoLiMa, or RULER suites.
+
+### Routing-only scan versus persistent addressing
+
+The benchmark targets the index-scan bottleneck identified by
+[KARAT](https://arxiv.org/abs/2608.03555) and distinguishes true address lookup from
+[BinaryPC](https://arxiv.org/abs/2608.04405)'s cheaper full binary scan.
+
+This synthetic systems benchmark isolates candidate discovery. It excludes index
+construction, KV gather, exact candidate attention, and model execution. Each length
+uses 64 normalized 64-dimensional near-neighbor queries and returns `K=32` positions.
+The matched methods are an FP16 similarity scan, a packed 64-bit Hamming scan, and a
+persistent direct-address index with four 16-bit tables, two lowest-margin probes,
+capacity 16 per bucket, a bounded 128-entry pool, and Hamming reranking to `K=32`.
+
+Timings are medians from seven repetitions of each of 64 queries, executed one query
+at a time after four warmups. Hardware is a 24 GB Apple M4 Pro MacBook Pro; software
+is macOS 26.6.2, Python 3.13.4, MLX 0.32.0, and NumPy 2.2.6. Bytes are logical
+historical-index payloads read per query, not hardware performance-counter values.
+
+| Keys | FP16 scan | Binary64 scan | Addressed | FP bytes | Binary bytes | Addressed bytes | FP-top32 recall | Needle recall |
+|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| 16K | 216.6 us | 293.7 us | 363.8 us | 2 MiB | 128 KiB | 1.5 KiB | 3.96% | 98.44% |
+| 32K | 236.1 us | 283.8 us | 354.9 us | 4 MiB | 256 KiB | 1.5 KiB | 3.66% | 100.00% |
+| 64K | 283.8 us | 359.1 us | 372.5 us | 8 MiB | 512 KiB | 1.5 KiB | 3.81% | 98.44% |
+| 128K | 348.8 us | 424.0 us | 340.7 us | 16 MiB | 1 MiB | 1.5 KiB | 4.05% | 100.00% |
+| 256K | 560.9 us | 535.9 us | 378.2 us | 32 MiB | 2 MiB | 1.5 KiB | 4.00% | 98.44% |
+| 512K | 928.5 us | 857.0 us | 355.1 us | 64 MiB | 4 MiB | 1.5 KiB | 3.56% | 90.62% |
+| 1M | 1,645.8 us | 1,604.6 us | 337.4 us | 128 MiB | 8 MiB | 1.5 KiB | 2.98% | 78.12% |
+| 2M | 3,157.9 us | 3,334.2 us | 342.9 us | 256 MiB | 16 MiB | 1.5 KiB | 2.10% | 53.12% |
+
+![Routing latency and recall](assets/routing-scan-scaling.svg)
+
+From 16K to 2M, FP16 and binary latency grow 14.58x and 11.35x; addressed lookup
+changes by 0.94x. At 2M the addressed prototype is 9.21x faster than FP16 routing
+and 9.72x faster than binary routing. Index construction, reported separately, grows
+from 2.39 ms to 116.61 ms and is not yet an append-only decode update. Chunked recall
+evaluation keeps peak MLX memory to 432 MB.
+
+The latency and byte curves support bounded candidate discovery. Recall does not yet
+support replacing a general attention selector: capacity-16 bucket eviction drops
+needle recall from 98.44% at 256K to 78.12% at 1M and 53.12% at 2M, even though
+query/target addresses agree in 96.88% of 2M cases.
+It recovers only 2.1–4.1% of the FP top 32. These results must not be presented as an
+end-to-end model speedup.
+
+### Bucket-retention tradeoff
+
+The matched ablation holds keys, projections, per-length queries, four tables, 16
+address bits, two probes, and `K=32` fixed. Separate key, projection, and per-length
+query RNG streams make a row invariant to which other lengths appear in the CLI
+sweep. This correction supersedes earlier retention numbers produced before the RNG
+streams were separated.
+
+| 2M variant | Routing | Bytes/query | Needle recall | FP-top32 recall | Recall given address | Evicted postings |
+|---|---:|---:|---:|---:|---:|---:|
+| Capacity 16, tail | 306.0 us | 1.5 KiB | 53.12% | 2.10% | 54.84% | 59.45% |
+| Capacity 16, reservoir | 346.4 us | 1.5 KiB | 67.19% | 2.29% | 69.35% | 59.45% |
+| Capacity 32, tail | 311.2 us | 3 KiB | 76.56% | 3.12% | 79.03% | 36.25% |
+| Capacity 32, reservoir | 299.9 us | 3 KiB | **85.94%** | 3.12% | 88.71% | 36.25% |
+| Capacity 64, tail | 309.9 us | 6 KiB | **92.19%** | 3.56% | 95.16% | 14.95% |
+
+![Bucket-retention recall/traffic tradeoff](assets/bucket-retention-tradeoff.svg)
+
+At 2M, mean nonempty-bucket occupancy is 32.24, p99 is 164, and the maximum is
+771. Capacity 64 nearly closes retention loss conditional on a correct address, but
+does not reach 95% overall recall and doubles the proposed 3 KiB traffic ceiling.
+Reservoir retention improves capacity 32 by 9.38 percentage points without more
+traffic, yet remains 9.06 points short of the target. Fingerprint subslots are a
+negative result: at 2M they reach only 50.00% at capacity 16 and 67.19% at capacity
+32 because collisions leave effective capacity unused.
+
+The next systems gate is therefore a hierarchical or adaptive local posting index:
+use secondary addressing or conditional probes only for crowded buckets, then test
+the explicit target of at least 95% needle recall, at most 3 KiB/query, and at most
+350 us/query. After that, run the same benchmark with model-derived addresses and
+targets, report recall/traffic together, and integrate an append-only causal index.

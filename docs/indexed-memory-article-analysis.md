@@ -124,6 +124,15 @@ The current implementation constructs a parallel prefill index. It has no persis
 append-only index or K/V cache for token-by-token generation. Demonstrating causal
 prefill correctness does not establish practical autoregressive serving.
 
+A routing-only benchmark now implements an offline persistent direct-address table and
+measures lookup separately from index build. Its flat 16K–2M lookup curve validates
+the bounded-address mechanism, but it is not wired into decoding. At 2M, fixed bucket
+capacity reduces needle recall to 53.12% and low FP-top32 overlap prevents a general
+selector-quality claim. A matched retention sweep raises recall to 92.19% with
+capacity 64 at 6 KiB/query; capacity-32 reservoir reaches 85.94% at 3 KiB/query.
+Neither meets the active target of at least 95% recall within 3 KiB and 350 us, so the
+next design problem is secondary addressing or adaptive storage inside crowded buckets.
+
 ### Benchmark routing can overfit
 
 The embedding projection overfit a 40-section documentation corpus, and the project
@@ -133,13 +142,12 @@ substitute for long-context retrieval and broad capability evaluations.
 
 ## Roadmap changes implied by the article
 
-1. Continue layerwise LFM conversion through layers 10, 8, 5, and 2, with combined
-   recovery and zero-gate checks after every addition.
+1. Keep layerwise LFM conversion paused until retrieval generalization improves.
 2. Add a fixed-budget block/span router and compare it with token routing.
 3. Train routers on mixed-length natural-language attention and explicit retrieval
    labels rather than repository prose alone.
-4. Implement an append-only persistent decode index that does not rebuild or sort the
-   full history per generated token.
+4. Convert the offline persistent address-table prototype into an append-only causal
+   decode index that does not rebuild or sort the full history per generated token.
 5. Report selector build, lookup, gathered attention, and full-model costs separately.
 6. Run public NIAH, NoLiMa-style lexical mismatch, and RULER before describing the
    conversion as a long-context language model.

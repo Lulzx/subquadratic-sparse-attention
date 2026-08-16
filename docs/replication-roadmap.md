@@ -30,15 +30,15 @@ That is an audit result, not 67 replicated model claims.
 
 | # | Public claim family | Status | Evidence or missing work |
 |---:|---|---|---|
-| 1 | Arbitrary-position content-dependent sparse retrieval | Partial | Across three seeds, a completed-block LFM2.5 index preserves 27/27 exact, 24/24 dense-pass lexical-mismatch, and 13/27 long-value cases through 1,024 tokens at K=64. Public benchmarks and stronger long-value recall remain. |
+| 1 | Arbitrary-position content-dependent sparse retrieval | Partial | The expanded three-seed 1K gate uses three unseen values, two templates, and three positions per task. Recent K=32 preserves 132/189 dense-pass trials, hybrid K=32 preserves 127/189, and block K=64 preserves 111/189. All preserve 54/54 exact trials, but task-specific failures remain. |
 | 2 | End-to-end linear selection and attention | Partial | Attention reads fixed `K=32`; portable bucket construction still sorts in `O(n log n)`. |
 | 3 | Linear memory scaling | Partial | Selected attention has bounded reads and measured memory through 16K, not millions of tokens. |
 | 4 | Full-context training and ordinary autoregressive operation | Partial | Parallel causal prefill works; a persistent incremental decode cache is absent. |
-| 5 | Conversion of a dense pretrained donor without losing language quality | Partial | LFM2.5 layers 12 and 14 are replaced. Three-seed mixed-corpus KL recovery passes the 65K-token raw-text gate at 0.9675x dense perplexity on WikiText and 0.8712x on PG-19. Retrieval, instruction, and broad evaluations remain. |
+| 5 | Conversion of a dense pretrained donor without losing language quality | Partial | LFM2.5 layers 12 and 14 are replaced and pass the 65K-token raw-text gate. The expanded retrieval gate preserves only 59–70% of dense-pass trials depending on the selector, so conversion is paused before layer 10. |
 | 6 | 64.5x FLOP reduction at 1M | Arithmetic only | `252 / 3.9 = 64.6`; undisclosed dimensions prevent an absolute rerun. |
 | 7 | 56x attention-layer wall-clock speedup at 1M | Arithmetic only | `54,164 / 966 = 56.07`; no matched H100 run exists. |
 | 8 | RULER average 99.12 at 128K | Not reproduced | The public benchmark has not yet been integrated. |
-| 9 | NIAH retrieval through 12M and extrapolation beyond training length | Partial | MQAR reaches 95.22% at 16x training length. Three-seed LFM2.5 exact and lexical retrieval passes through 1,024 tokens after router supervision, but this is not public NIAH or multi-million-token evidence. |
+| 9 | NIAH retrieval through 12M and extrapolation beyond training length | Partial | MQAR reaches 95.22% at 16x training length. On 54 local NIAH-style dense-pass trials at 1K, hybrid K=32 preserves 44, recent K=32 preserves 41, and block K=64 preserves 8. This is not the public benchmark or multi-million-token evidence. |
 | 10 | 0.13% of token pairs at 12M, described as nearly 1,000x fewer | Arithmetic only | The table-derived fraction implies about 775x fewer pairs. |
 | 11 | GPQA Diamond 85.4 | Not reproduced | Requires a capable converted language model and matched evaluation. |
 | 12 | LiveCodeBench 89.7 pass@4 | Not reproduced | Requires a capable converted language model and matched evaluation. |
@@ -240,6 +240,15 @@ Add tasks in increasing order of semantic difficulty:
 Track answer accuracy, selector recall, retained teacher-attention mass, candidate
 budget, latency, peak memory, and failure by retrieval distance.
 
+The first expanded gate now covers the first four task families at 1K with a fixed
+288-case manifest spanning four target lengths. Only 72 cases are approved on the
+current laptop: dense passes 63, and each sparse variant is evaluated on those same
+cases across three seeds. Recent K=32 is best overall at 132/189 dense-pass trials;
+hybrid K=32 is best on NIAH-style retrieval at 44/54; block K=64 is best on
+multi-token retrieval at 22/54. No variant passes the gate uniformly. A dense 4K probe
+peaks at 2.82 GB and a hybrid 4K probe at 2.48 GB, so longer-context rows remain
+unexecuted under the 1.792 GB operating limit rather than being reported as failures.
+
 ### Stage C: pretrained language-model conversion
 
 LFM2.5-350M is now the primary donor. Layers 12 and 14 are independently converted
@@ -254,11 +263,32 @@ layer 10, then repeat every gate after each new layer.
 GPQA, LiveCodeBench, and AutomationBench belong at the end of this sequence; they cannot
 diagnose router quality in a tiny synthetic model.
 
+The expanded retrieval gate does not authorize layer 10 conversion. Exact retrieval
+is stable, but lexical, multi-token, and NIAH-style preservation trade off across
+recent, hybrid, and block selectors, with the best aggregate retaining only 69.84% of
+dense-pass trials. The next model-quality step is a selector that combines the token
+router's NIAH behavior with the block path's multi-token behavior, followed by this
+same gate; adding another sparse layer would confound that diagnosis.
+
 ### Stage D: selector and decode systems work
 
-Replace sorting with append-only tables, implement persistent decoding, then fuse the
-gather/attention path in Metal. Only after correctness parity should the project compare
-against dense MLX attention at increasing lengths.
+A routing-only persistent direct-address prototype now separates the indexing
+bottleneck from attention. From 16K to 2M, one-query FP16 and 64-bit scans grow
+14.58x and 11.35x, while bounded addressed lookup changes by 0.94x and reads a fixed
+1.5 KiB of historical index payload. At 2M it is 9.21x faster than FP routing, but
+capacity-16 bucket eviction reduces planted-needle recall to 53.12% despite 96.88%
+address agreement. Its overlap with the FP top 32 is only 2.10%, and index
+construction is still an offline rebuild rather than a causal
+append-only update.
+
+A matched retention sweep makes the next gate sharper. Capacity-64 tail retention
+reaches 92.19% recall at 309.9 us and 6 KiB/query. Capacity-32 reservoir is the best
+tested point under 3 KiB, at 85.94% and 299.9 us. Fingerprint subslots regress recall.
+The next systems gate is a hierarchical or adaptive crowded-bucket design that reaches
+at least 95% needle recall at 2M, at most 3 KiB/query, and at most 350 us/query.
+After that comes learned-address recall on model-derived queries, append-only decode
+integration, and correctness parity. Only then should the project fuse gather/attention
+in Metal or compare end-to-end execution against dense MLX attention.
 
 The [indexed-memory article analysis](indexed-memory-article-analysis.md) adds two
 explicit gates before any end-to-end sub-quadratic claim: compare token routing with a

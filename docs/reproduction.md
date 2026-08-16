@@ -249,6 +249,149 @@ LFM replacement, multilayer, recovery, quality, behavior, and retrieval-router
 commands. They affect token-bucket selection only; `--block-size` keeps the existing
 completed-block policy.
 
+Evaluate the post-hoc policy transfer on the three existing token-router checkpoints:
+
+```bash
+for seed in 0 1 2; do
+  python3 mlx_lfm_behavior_eval.py \
+    --checkpoint-template \
+      'runs/lfm2.5-layer{layer}-retrieval-router-12-14-seed{seed}.safetensors' \
+    --lengths 256,512,1024 --positions 0.1,0.5,0.9 \
+    --tasks exact,lexical,variable --max-new-tokens 16 \
+    --member-policy hybrid --history-fraction 0.5 \
+    --seed "$seed" \
+    --output \
+      "runs/lfm2.5-behavior-retrieval-router-hybrid05-12-14-seed${seed}.json"
+done
+```
+
+This comparison uses checkpoints trained under recent-tail selection. It tests an
+inference-time policy change, not hybrid-aware router training or sparse recovery.
+
+Retrain the routers with hybrid selection active, then repeat the behavior and paired
+quality gates:
+
+```bash
+for seed in 0 1 2; do
+  python3 mlx_lfm_retrieval_router.py \
+    --checkpoint-template \
+      'runs/lfm2.5-layer{layer}-joint-kl-12-14-seed{seed}.safetensors' \
+    --output-template \
+      'runs/lfm2.5-layer{layer}-hybrid05-retrieval-router-12-14-seed{seed}.safetensors' \
+    --lengths 256,512 --positions 0.1,0.5 \
+    --steps 300 --lr 3e-4 \
+    --member-policy hybrid --history-fraction 0.5 \
+    --memory-limit-mb 1400 --cache-limit-mb 128 \
+    --seed "$seed" \
+    --output \
+      "runs/lfm2.5-retrieval-router-hybrid05-trained-12-14-seed${seed}.json"
+
+  python3 mlx_lfm_behavior_eval.py \
+    --checkpoint-template \
+      'runs/lfm2.5-layer{layer}-hybrid05-retrieval-router-12-14-seed{seed}.safetensors' \
+    --lengths 256,512,1024 --positions 0.1,0.5,0.9 \
+    --tasks exact,lexical,variable --max-new-tokens 16 \
+    --member-policy hybrid --history-fraction 0.5 \
+    --seed "$seed" \
+    --output \
+      "runs/lfm2.5-behavior-hybrid05-trained-retrieval-router-12-14-seed${seed}.json"
+
+  python3 mlx_lfm_quality_eval.py \
+    --layers 12,14 --tokens-per-corpus 65536 \
+    --bootstrap-samples 10000 --batch-size 4 \
+    --checkpoint-template \
+      'runs/lfm2.5-layer{layer}-hybrid05-retrieval-router-12-14-seed{seed}.safetensors' \
+    --member-policy hybrid --history-fraction 0.5 \
+    --seed "$seed" \
+    --output \
+      "runs/lfm2.5-quality-hybrid05-trained-retrieval-router-65k-seed${seed}.json"
+done
+```
+
+This retrains only the hash routers. The parent sparse Q/K/V/O branches are the
+existing joint-KL checkpoints recovered under recent-tail selection.
+
+### Expanded retrieval-generalization gate
+
+Create the tokenizer-derived manifest. It contains all four intended lengths even
+though the local memory probe approves only the 1K slice:
+
+```bash
+python3 mlx_lfm_retrieval_generalization.py \
+  --make-manifest runs/lfm2.5-retrieval-generalization-manifest.json \
+  --lengths 1024,4096,8192,16384 --positions 0.1,0.5,0.9
+```
+
+Evaluate dense once, then each sparse checkpoint seed on the same 72 1K cases. Reports
+are rewritten after every case and can be continued with `--resume` after an
+interruption.
+
+```bash
+python3 mlx_lfm_retrieval_generalization.py \
+  --manifest runs/lfm2.5-retrieval-generalization-manifest.json \
+  --variant dense --mode dense --only-lengths 1024 \
+  --output runs/lfm2.5-generalization-dense-1k.json
+
+for seed in 0 1 2; do
+  python3 mlx_lfm_retrieval_generalization.py \
+    --manifest runs/lfm2.5-retrieval-generalization-manifest.json \
+    --variant recent_k32 --mode sparse \
+    --checkpoint-template \
+      'runs/lfm2.5-layer{layer}-retrieval-router-12-14-seed{seed}.safetensors' \
+    --members 4 --member-policy recent --seed "$seed" --only-lengths 1024 \
+    --output "runs/lfm2.5-generalization-recent-k32-seed${seed}-1k.json"
+
+  python3 mlx_lfm_retrieval_generalization.py \
+    --manifest runs/lfm2.5-retrieval-generalization-manifest.json \
+    --variant hybrid_k32 --mode sparse \
+    --checkpoint-template \
+      'runs/lfm2.5-layer{layer}-hybrid05-retrieval-router-12-14-seed{seed}.safetensors' \
+    --members 4 --member-policy hybrid --history-fraction 0.5 \
+    --seed "$seed" --only-lengths 1024 \
+    --output "runs/lfm2.5-generalization-hybrid-k32-seed${seed}-1k.json"
+
+  python3 mlx_lfm_retrieval_generalization.py \
+    --manifest runs/lfm2.5-retrieval-generalization-manifest.json \
+    --variant block_k64 --mode sparse \
+    --checkpoint-template \
+      'runs/lfm2.5-layer{layer}-block4-retrieval-sft-12-14-seed{seed}.safetensors' \
+    --members 2 --block-size 4 --seed "$seed" --only-lengths 1024 \
+    --output "runs/lfm2.5-generalization-block-k64-seed${seed}-1k.json"
+done
+```
+
+Aggregate dense-pass preservation, Wilson intervals, seed variation, and task/value/
+template/distance slices:
+
+```bash
+python3 mlx_lfm_retrieval_generalization_report.py \
+  --manifest runs/lfm2.5-retrieval-generalization-manifest.json \
+  runs/lfm2.5-generalization-dense-1k.json \
+  runs/lfm2.5-generalization-recent-k32-seed{0,1,2}-1k.json \
+  runs/lfm2.5-generalization-hybrid-k32-seed{0,1,2}-1k.json \
+  runs/lfm2.5-generalization-block-k64-seed{0,1,2}-1k.json \
+  --skip 'dense:4096:single-case probe peaked at 2819.22 MB, above the 1792 MB operating limit' \
+  --skip 'recent_k32:4096:not attempted after the matched K32 hybrid probe peaked at 2482.98 MB with the same four remaining dense layers' \
+  --skip 'hybrid_k32:4096:single-case probe peaked at 2482.98 MB, above the 1792 MB operating limit' \
+  --skip 'block_k64:4096:not attempted because its 1K peak exceeds token routing and the same four dense layers already fail the 4K limit' \
+  --skip 'dense:8192:4K already exceeded the operating limit' \
+  --skip 'recent_k32:8192:4K matched architecture already exceeded the operating limit' \
+  --skip 'hybrid_k32:8192:4K already exceeded the operating limit' \
+  --skip 'block_k64:8192:4K matched architecture already exceeded the operating limit' \
+  --skip 'dense:16384:4K already exceeded the operating limit' \
+  --skip 'recent_k32:16384:4K matched architecture already exceeded the operating limit' \
+  --skip 'hybrid_k32:16384:4K already exceeded the operating limit' \
+  --skip 'block_k64:16384:4K matched architecture already exceeded the operating limit' \
+  --output runs/lfm2.5-retrieval-generalization-1k.json \
+  --markdown-output runs/lfm2.5-retrieval-generalization-1k.md
+```
+
+The final recorded report also includes explicit `--skip VARIANT:LENGTH:REASON`
+metadata for 4K, 8K, and 16K. A one-case 4K dense probe peaked at 2.82 GB and a hybrid
+probe at 2.48 GB, above the 1.792 GB operating limit. Do not rerun or extend these
+probes on the reference 24 GB laptop; use a higher-memory machine or first convert the
+remaining dense attention layers.
+
 ### One-layer LFM2.5 sparse conversion
 
 First produce router checkpoints for seeds 0, 1, and 2 with the causal-donor command
@@ -461,6 +604,57 @@ Selector only:
 ```bash
 python3 mlx_selector.py
 ```
+
+Routing-only scan versus persistent addressing, with one-query timings and a fixed
+`K=32` final budget:
+
+```bash
+python3 mlx_routing_scan_bench.py \
+  --lengths 16384,32768,65536,131072,262144,524288,1048576,2097152 \
+  --queries 64 --k 32 \
+  --tables 4 --bits 16 --probes 2 --bucket-capacity 16 \
+  --retention-policy tail \
+  --warmups 4 --repeats 7 --recall-batch 1 \
+  --output runs/routing-scan-addressed-c16-16k-2m.json
+
+python3 mlx_routing_scan_report.py \
+  runs/routing-scan-addressed-c16-16k-2m.json \
+  --markdown-output runs/routing-scan-addressed-c16-16k-2m.md \
+  --plot-output docs/assets/routing-scan-scaling.svg
+```
+
+The benchmark times query encoding plus routing and selection. It deliberately
+excludes offline index construction, KV gather, attention, and model execution. The
+reported bytes/query are logical index payloads, not measured DRAM traffic. Run it
+alone: the full sweep peaks near 432 MB on the reference laptop. The 2M row is the
+documented ceiling; larger contexts are intentionally outside this protocol.
+
+Run the matched bucket-retention ablation sequentially. Every command uses the same
+seed-stable keys, projections, and per-length query set:
+
+```bash
+for spec in '16 tail' '16 reservoir' '32 tail' '32 reservoir' '64 tail'; do
+  set -- $spec
+  python3 mlx_routing_scan_bench.py \
+    --lengths 262144,1048576,2097152 --queries 64 --k 32 \
+    --tables 4 --bits 16 --probes 2 --bucket-capacity "$1" \
+    --retention-policy "$2" --warmups 4 --repeats 7 --recall-batch 1 \
+    --output "runs/routing-retention-c${1}-${2}-256k-2m.json"
+done
+
+python3 mlx_bucket_retention_report.py \
+  runs/routing-retention-c16-tail-256k-2m.json \
+  runs/routing-retention-c16-reservoir-256k-2m.json \
+  runs/routing-retention-c32-tail-256k-2m.json \
+  runs/routing-retention-c32-reservoir-256k-2m.json \
+  runs/routing-retention-c64-tail-256k-2m.json \
+  --markdown-output runs/routing-retention-256k-2m.md \
+  --plot-output docs/assets/bucket-retention-tradeoff.svg
+```
+
+The fingerprint-policy follow-ups use the same benchmark command with the
+corresponding `--bucket-capacity` and `--retention-policy` values. They are recorded
+as negative follow-up evidence rather than included in the five-way plot.
 
 Projected selected attention:
 

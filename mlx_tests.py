@@ -1,5 +1,7 @@
 import math
+import json
 import pathlib
+import re
 import tempfile
 
 import mlx.core as mx
@@ -10,6 +12,22 @@ import numpy as np
 from mlx_train import curriculum_length, scaled_batch_size
 from mlx_donor_router import DonorHashRouter, hard_metrics
 from mlx_lfm_replacement import GatedLFMReplacement
+from mlx_lfm_retrieval_generalization import (
+    TASK_VALUES,
+    build_manifest,
+    distant_candidate_budget,
+    load_manifest,
+)
+from mlx_lfm_retrieval_generalization_report import aggregate, wilson_interval
+from mlx_lfm_retrieval_router import TRAIN_VALUES
+from mlx_routing_scan_bench import (
+    build_bucket_index,
+    build_bucket_tails,
+    candidate_recall,
+    logical_history_bytes,
+    packed_codes,
+    per_length_query_rng,
+)
 from ssa.mlx_attention import random_weights, sparse_attention, sparse_attention_chunked
 from ssa.mlx_model import MLXSSAAttention, causal_slot_attention
 from ssa.mlx_selector import (
@@ -467,6 +485,174 @@ def test_lfm_replacement_gate_and_causality():
     print("PASS LFM replacement exact gate, sparse path, and routing causality")
 
 
+class FakeTokenizer:
+    def __init__(self):
+        self.vocabulary = {}
+
+    def apply_chat_template(self, messages, tokenize, add_generation_prompt):
+        assert not tokenize and add_generation_prompt
+        return f"USER: {messages[0]['content']}\nASSISTANT:"
+
+    def encode(self, text, add_special_tokens=False):
+        assert not add_special_tokens
+        pieces = re.findall(r"\w+|[^\w\s]", text)
+        return [
+            self.vocabulary.setdefault(piece, len(self.vocabulary) + 1)
+            for piece in pieces
+        ]
+
+
+def test_retrieval_generalization_manifest():
+    manifest = build_manifest(
+        FakeTokenizer(), "test/model", lengths=(256,), positions=(0.1, 0.9)
+    )
+    assert len(manifest["cases"]) == 48
+    assert len({case["case_id"] for case in manifest["cases"]}) == 48
+    assert all(case["actual_length"] >= 256 for case in manifest["cases"])
+    assert all(case["source_start"] < case["query_position"] for case in manifest["cases"])
+    assert {case["task"] for case in manifest["cases"]} == set(TASK_VALUES)
+    training_values = {
+        value for values in TRAIN_VALUES.values() for value in values
+    }
+    evaluation_values = {
+        value for values in TASK_VALUES.values() for value in values
+    }
+    assert training_values.isdisjoint(evaluation_values)
+    with tempfile.TemporaryDirectory() as temporary:
+        path = pathlib.Path(temporary) / "manifest.json"
+        path.write_text(json.dumps(manifest))
+        loaded = load_manifest(path)
+    assert loaded["manifest_sha256"] == manifest["manifest_sha256"]
+    assert loaded["cases"] == manifest["cases"]
+    assert distant_candidate_budget(8, 1, 4, span_size=2) == 64
+    assert distant_candidate_budget(8, 1, 2, block_size=4) == 64
+    try:
+        distant_candidate_budget(8, 1, 4, span_size=2, block_size=4)
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("mixed span/block expansion must be rejected")
+    print("PASS deterministic unseen retrieval-generalization manifest")
+
+
+def test_retrieval_generalization_report():
+    manifest = build_manifest(
+        FakeTokenizer(), "test/model", lengths=(256,), positions=(0.1,)
+    )
+    cases = manifest["cases"][:2]
+
+    def result(case, correct):
+        return {
+            key: value for key, value in case.items()
+            if key not in ("prompt", "needle", "expected")
+        } | {"contains_expected": correct}
+
+    common = {
+        "manifest_sha256": manifest["manifest_sha256"],
+        "checkpoint_template": None,
+        "distant_candidate_budget": None,
+        "member_policy": None,
+        "history_fraction": None,
+        "block_size": None,
+        "peak_memory_mb": 1.0,
+        "elapsed_seconds": 1.0,
+    }
+    dense = common | {
+        "variant": "dense",
+        "mode": "dense",
+        "seed": None,
+        "results": [result(cases[0], True), result(cases[1], False)],
+    }
+    sparse = common | {
+        "variant": "hybrid_k32",
+        "mode": "sparse",
+        "seed": 0,
+        "checkpoint_template": "checkpoint-{seed}",
+        "distant_candidate_budget": 32,
+        "member_policy": "hybrid",
+        "history_fraction": 0.5,
+        "block_size": 0,
+        "results": [result(cases[0], True), result(cases[1], True)],
+    }
+    report = aggregate(manifest, [dense, sparse])
+    overall = report["slices"]["overall"]["dense_pass_preservation"]
+    assert overall == [{
+        "variant": "hybrid_k32",
+        "successes": 1,
+        "trials": 1,
+        "accuracy": 1.0,
+        "wilson_ci95": wilson_interval(1, 1),
+        "mean_retrieval_distance": cases[0]["retrieval_distance"],
+    }]
+    by_value = report["slices"]["by_value"]["dense_pass_preservation"]
+    assert {row["value"] for row in by_value} == {
+        f"{case['task']}:{case['expected']}" for case in cases
+    }
+    interval = wilson_interval(50, 100)
+    assert interval[0] < 0.5 < interval[1]
+    print("PASS matched retrieval report and Wilson uncertainty")
+
+
+def test_routing_scan_benchmark():
+    full_sweep_targets = {
+        length: per_length_query_rng(7, length, 64).integers(0, length, size=64)
+        for length in (262_144, 1_048_576, 2_097_152)
+    }
+    subset_targets = per_length_query_rng(7, 2_097_152, 64).integers(
+        0, 2_097_152, size=64
+    )
+    np.testing.assert_array_equal(
+        full_sweep_targets[2_097_152], subset_targets,
+    )
+    codes = np.array([
+        [1, 2],
+        [1, 3],
+        [1, 2],
+        [4, 2],
+        [1, 2],
+    ], dtype=np.uint16)
+    tails = build_bucket_tails(codes, members=2, address_bits=4)
+    np.testing.assert_array_equal(tails[0, 1], np.array([4, 2]))
+    np.testing.assert_array_equal(tails[1, 2], np.array([4, 3]))
+    crowded = np.ones((10, 2), dtype=np.uint16)
+    reservoir_a, occupancy = build_bucket_index(
+        crowded, capacity=3, address_bits=4, retention_policy="reservoir"
+    )
+    reservoir_b, _ = build_bucket_index(
+        crowded, capacity=3, address_bits=4, retention_policy="reservoir"
+    )
+    np.testing.assert_array_equal(reservoir_a, reservoir_b)
+    assert len(set(reservoir_a[0, 1])) == 3
+    assert occupancy["max_occupancy"] == 10
+    assert occupancy["eviction_count"] == 14
+    assert occupancy["evicted_fraction"] == 0.7
+    fingerprint, fingerprint_stats = build_bucket_index(
+        crowded, capacity=4, address_bits=4, retention_policy="fingerprint"
+    )
+    assert np.sum(fingerprint >= 0) == 2
+    assert fingerprint_stats["eviction_count"] == 18
+    assert candidate_recall(
+        np.array([[1, 2], [3, -1]]),
+        np.array([[1, 2], [3, 4]]),
+        k=2,
+    ) == 0.75
+    short = logical_history_bytes(16, 64, 4, 8, probes=2)
+    long = logical_history_bytes(256, 64, 4, 8, probes=2)
+    assert long["fp_scan"] == 16 * short["fp_scan"]
+    assert long["binary64_scan"] == 16 * short["binary64_scan"]
+    assert long["bucket_lookup"] == short["bucket_lookup"] == 768
+    vectors = np.eye(4, dtype=np.float32)
+    projection = np.arange(4 * 64, dtype=np.float32).reshape(4, 64) - 100.0
+    byte_codes, table_codes = packed_codes(vectors, projection, chunk_size=2)
+    assert byte_codes.shape == (4, 8)
+    reconstructed = (
+        byte_codes[:, 0::2].astype(np.uint16)
+        | (byte_codes[:, 1::2].astype(np.uint16) << np.uint16(8))
+    )
+    np.testing.assert_array_equal(table_codes, reconstructed)
+    print("PASS routing-scan index, byte accounting, and recall metrics")
+
+
 if __name__ == "__main__":
     test_reference()
     test_multiprobe_neighbor()
@@ -482,3 +668,6 @@ if __name__ == "__main__":
     test_learned_router_diagnostics()
     test_weight_resume()
     test_lfm_replacement_gate_and_causality()
+    test_retrieval_generalization_manifest()
+    test_retrieval_generalization_report()
+    test_routing_scan_benchmark()

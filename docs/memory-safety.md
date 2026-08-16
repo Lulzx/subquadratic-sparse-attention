@@ -48,6 +48,20 @@ The three-seed block path peaks at 1.24 GB for router training, 1.44 GB for retr
 1.46 GB for the paired quality audit, and 1.64 GB for the full 1,024-token generation
 matrix. Replication runs remain sequential.
 
+The expanded retrieval-generalization gate is likewise limited to 1,024 tokens on the
+reference laptop. Across its 72 matched cases, dense peaks at 1.58 GB, recent K=32 and
+hybrid K=32 at 1.49 GB, and completed-block K=64 at 1.66 GB. A one-case 4,096-token
+dense probe peaked at 2.82 GB and a matched hybrid K=32 probe at 2.48 GB, both above
+the 1.792 GB operating limit. The remaining 4K variants and every 8K/16K run are
+recorded as resource skips rather than attempted. These skips are memory-safety
+evidence, not retrieval results.
+
+The routing-only 16K–2M selector comparison peaks at 432 MB with 64 queries chunked
+one at a time for recall and timing. Run it separately from model
+evaluation. Its persistent address table is a benchmark prototype; the production
+prefill selector still uses the sort-built path. The matched retention runs peak at
+432 MB for capacity 16, 448 MB for capacity 32, and 480 MB for capacity 64.
+
 ## Recommended long-context settings
 
 Use batch size 1 beyond 1K for end-to-end model evaluation:
