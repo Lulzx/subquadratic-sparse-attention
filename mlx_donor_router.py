@@ -130,7 +130,8 @@ class DonorHashRouter(nn.Module):
         ]))
         decorrelation_terms = []
         for logits in (query_logits, key_logits):
-            values = mx.tanh(logits).reshape(-1, self.tables * self.bits)
+            dimensions = logits.shape[-2] * logits.shape[-1]
+            values = mx.tanh(logits).reshape(-1, dimensions)
             values = values - mx.mean(values, axis=0, keepdims=True)
             covariance = (values.T @ values) / max(values.shape[0], 1)
             variance = mx.diag(covariance)
@@ -164,6 +165,1074 @@ class DonorHashRouter(nn.Module):
         )
 
 
+class HierarchicalAttentionRouter(DonorHashRouter):
+    """Use separate 64-bit codes for addressing and bounded candidate reranking."""
+
+    def __init__(self, width, tables, bits, rerank_bytes=8):
+        super().__init__(width, tables, bits)
+        scale = 1.0 / math.sqrt(width)
+        self.rerank_tables = rerank_bytes
+        self.rerank_query_projection = mx.random.normal(
+            (width, rerank_bytes * 8)
+        ) * scale
+        self.rerank_key_projection = self.rerank_query_projection + mx.zeros_like(
+            self.rerank_query_projection
+        )
+        self.rerank_bit_weights = mx.zeros((rerank_bytes * 8,))
+        self.rerank_bilinear = mx.eye(rerank_bytes * 8) / 2.0
+        byte_values = np.arange(256, dtype=np.uint16)
+        byte_hamming = np.unpackbits(
+            np.bitwise_xor(byte_values[:, None], byte_values[None, :])
+            .astype(np.uint8)[..., None],
+            axis=-1,
+        ).sum(axis=-1).astype(np.float32)
+        self.rerank_lookup = mx.array(
+            np.repeat((-byte_hamming)[None, :, :], rerank_bytes, axis=0)
+        )
+        decoder_width = max(128, rerank_bytes * 8)
+        decoder_extra = mx.random.normal(
+            (width, decoder_width - rerank_bytes * 8)
+        ) * scale
+        self.rerank_decoder_query = mx.concatenate(
+            [self.rerank_query_projection, decoder_extra], axis=-1
+        )
+        decoder_embeddings = np.zeros(
+            (rerank_bytes, 256, decoder_width), dtype=np.float32
+        )
+        byte_bits = np.unpackbits(
+            np.arange(256, dtype=np.uint8)[:, None], axis=-1,
+            bitorder="little",
+        ).astype(np.float32) * 2.0 - 1.0
+        for table in range(rerank_bytes):
+            decoder_embeddings[table, :, table * 8:(table + 1) * 8] = byte_bits
+        self.rerank_decoder_keys = mx.array(decoder_embeddings)
+        self.rerank_distance_bias = mx.zeros((16,))
+        self.rerank_query_lookup_weight = mx.random.normal(
+            (width, rerank_bytes * 256)
+        ) * scale
+        self.rerank_query_lookup_bias = mx.zeros((rerank_bytes * 256,))
+        self.retention_projection = mx.random.normal((width,)) * scale
+
+    def rerank_logits(self, x):
+        shape = (*x.shape[:-1], self.rerank_tables, 8)
+        return (
+            (x @ self.rerank_query_projection).reshape(shape),
+            (x @ self.rerank_key_projection).reshape(shape),
+        )
+
+    def attention_rerank_loss(
+        self, x, teacher_probability, query_start, window, sink_tokens,
+        temperature=4.0, mass_gamma=1.0, balance_weight=10.0,
+        decorrelation_weight=1.0, pairwise_weight=1.0,
+        retrieval_topk=32, hard_negatives=32, pairwise_margin=2.0,
+        candidate_mask=None,
+        confidence_weighted=False, confidence_power=1.0,
+        confidence_mix=1.0,
+        bilinear=False,
+        lookup=False,
+        decoder=False,
+        distance_bias=False,
+        query_lookup=False,
+    ):
+        query_logits, key_logits = self.rerank_logits(x)
+        query_logits = query_logits[:, query_start:]
+        query_code = self.straight_through_sign(query_logits)
+        key_code = self.straight_through_sign(key_logits)
+        bit_weights = None
+        if confidence_weighted:
+            bit_weights = mx.power(mx.abs(query_logits), confidence_power)
+            global_weights = mx.logaddexp(
+                mx.zeros_like(self.rerank_bit_weights), self.rerank_bit_weights
+            ).reshape(1, 1, self.rerank_tables, 8)
+            bit_weights = bit_weights * global_weights
+            bit_weights = bit_weights / mx.maximum(
+                mx.mean(bit_weights, axis=(-1, -2), keepdims=True),
+                mx.array(1e-6, bit_weights.dtype),
+            )
+            bit_weights = (
+                (1.0 - confidence_mix) + confidence_mix * bit_weights
+            )
+        if query_lookup:
+            powers = mx.power(
+                mx.array(2, dtype=mx.int32), mx.arange(8, dtype=mx.int32)
+            )
+            key_indices = mx.sum(
+                ((key_code + 1.0) / 2.0).astype(mx.int32)
+                * powers.reshape(1, 1, 1, 8),
+                axis=-1,
+            )
+            lookup = (
+                x[:, query_start:] @ self.rerank_query_lookup_weight
+                + self.rerank_query_lookup_bias
+            ).reshape(
+                x.shape[0], x.shape[1] - query_start,
+                self.rerank_tables, 256,
+            )
+            batch_scores = []
+            for batch in range(x.shape[0]):
+                table_scores = []
+                for table in range(self.rerank_tables):
+                    table_scores.append(
+                        lookup[
+                            batch, :, table, key_indices[batch, :, table]
+                        ].T
+                    )
+                batch_scores.append(mx.sum(mx.stack(table_scores, axis=-1), axis=-1))
+            distance = -mx.stack(batch_scores, axis=0)
+        elif decoder:
+            powers = mx.power(
+                mx.array(2, dtype=mx.int32), mx.arange(8, dtype=mx.int32)
+            )
+            key_indices = mx.sum(
+                ((key_code + 1.0) / 2.0).astype(mx.int32)
+                * powers.reshape(1, 1, 1, 8),
+                axis=-1,
+            )
+            decoded_keys = mx.sum(mx.stack([
+                self.rerank_decoder_keys[table, key_indices[:, :, table]]
+                for table in range(self.rerank_tables)
+            ], axis=-2), axis=-2)
+            decoded_queries = x[:, query_start:] @ self.rerank_decoder_query
+            distance = -mx.einsum(
+                "bqd,bkd->bqk", decoded_queries, decoded_keys
+            )
+        elif lookup:
+            powers = mx.power(
+                mx.array(2, dtype=mx.int32), mx.arange(8, dtype=mx.int32)
+            )
+            query_indices = mx.sum(
+                ((query_code + 1.0) / 2.0).astype(mx.int32)
+                * powers.reshape(1, 1, 1, 8),
+                axis=-1,
+            )
+            key_indices = mx.sum(
+                ((key_code + 1.0) / 2.0).astype(mx.int32)
+                * powers.reshape(1, 1, 1, 8),
+                axis=-1,
+            )
+            table_scores = []
+            for table in range(self.rerank_tables):
+                table_scores.append(
+                    self.rerank_lookup[
+                        table,
+                        query_indices[:, :, None, table],
+                        key_indices[:, None, :, table],
+                    ]
+                )
+            distance = -mx.sum(mx.stack(table_scores, axis=-1), axis=-1)
+        elif bilinear:
+            query_flat = query_code.reshape(
+                query_code.shape[0], query_code.shape[1], -1
+            )
+            if bit_weights is not None:
+                query_flat = query_flat * bit_weights.reshape(
+                    bit_weights.shape[0], bit_weights.shape[1], -1
+                )
+            key_flat = key_code.reshape(key_code.shape[0], key_code.shape[1], -1)
+            bilinear_score = mx.einsum(
+                "bqd,df,bkf->bqk",
+                query_flat, self.rerank_bilinear, key_flat,
+            )
+            distance = -bilinear_score
+        else:
+            bit_distance = (
+                1.0
+                - query_code[:, :, None, :, :] * key_code[:, None, :, :, :]
+            ) / 2.0
+            if bit_weights is not None:
+                distance = mx.sum(
+                    bit_distance * bit_weights[:, :, None, :, :],
+                    axis=(-1, -2),
+                )
+            else:
+                distance = mx.sum(bit_distance, axis=(-1, -2))
+        query_positions = mx.arange(query_start, x.shape[1]).reshape(-1, 1)
+        key_positions = mx.arange(x.shape[1]).reshape(1, -1)
+        if distance_bias:
+            relative = mx.maximum(query_positions - key_positions, 1)
+            buckets = mx.minimum(
+                mx.floor(mx.log2(relative.astype(mx.float32))).astype(mx.int32),
+                self.rerank_distance_bias.shape[0] - 1,
+            )
+            distance = distance - self.rerank_distance_bias[buckets][None, :, :]
+        scores = -distance / temperature
+        eligible = (key_positions < query_positions - window) & (
+            key_positions >= sink_tokens
+        )
+        if candidate_mask is not None:
+            eligible = eligible & candidate_mask.astype(mx.bool_)
+        scores = mx.where(eligible, scores, mx.array(-1e9, scores.dtype))
+        log_probability = scores - mx.logsumexp(scores, axis=-1, keepdims=True)
+        masked_teacher = mx.where(
+            eligible, teacher_probability, mx.zeros_like(teacher_probability)
+        )
+        target = mx.power(
+            mx.maximum(masked_teacher, mx.array(0.0, masked_teacher.dtype)),
+            mass_gamma,
+        )
+        target = target / mx.maximum(
+            mx.sum(target, axis=-1, keepdims=True),
+            mx.array(1e-12, target.dtype),
+        )
+        cross_entropy = -mx.mean(mx.sum(target * log_probability, axis=-1))
+
+        label_count = min(retrieval_topk, teacher_probability.shape[-1])
+        teacher_order = mx.argsort(
+            -mx.where(
+                eligible, teacher_probability,
+                mx.array(-1.0, teacher_probability.dtype),
+            ),
+            axis=-1,
+        )
+        positive_indices = teacher_order[..., :label_count]
+        positive_mass = mx.take_along_axis(
+            masked_teacher, positive_indices, axis=-1
+        )
+        positive_weights = mx.power(
+            mx.maximum(positive_mass, mx.array(0.0, positive_mass.dtype)),
+            mass_gamma,
+        )
+        positive_weights = positive_weights / mx.maximum(
+            mx.sum(positive_weights, axis=-1, keepdims=True),
+            mx.array(1e-12, positive_weights.dtype),
+        )
+        teacher_rank = mx.argsort(teacher_order, axis=-1)
+        negative_mask = eligible & (teacher_rank >= label_count)
+        negative_order_score = mx.where(
+            negative_mask,
+            -mx.stop_gradient(distance),
+            mx.array(-1e9, distance.dtype),
+        )
+        negative_count = min(hard_negatives, teacher_probability.shape[-1])
+        negative_indices = mx.argsort(-negative_order_score, axis=-1)[
+            ..., :negative_count
+        ]
+        negative_valid = mx.take_along_axis(
+            negative_mask, negative_indices, axis=-1
+        )
+        negative_weights = negative_valid.astype(distance.dtype)
+        negative_weights = negative_weights / mx.maximum(
+            mx.sum(negative_weights, axis=-1, keepdims=True),
+            mx.array(1.0, negative_weights.dtype),
+        )
+        positive_distance = mx.take_along_axis(
+            distance, positive_indices, axis=-1
+        )
+        negative_distance = mx.take_along_axis(
+            distance, negative_indices, axis=-1
+        )
+        pairwise_terms = mx.logaddexp(
+            mx.zeros_like(
+                positive_distance[..., :, None] - negative_distance[..., None, :]
+            ),
+            pairwise_margin
+            + positive_distance[..., :, None]
+            - negative_distance[..., None, :],
+        )
+        pairwise_weights = (
+            positive_weights[..., :, None] * negative_weights[..., None, :]
+        )
+        pairwise_loss = mx.sum(pairwise_terms * pairwise_weights) / mx.maximum(
+            mx.sum(pairwise_weights), mx.array(1.0, pairwise_weights.dtype)
+        )
+
+        probabilities = [mx.sigmoid(query_logits), mx.sigmoid(key_logits)]
+        balance = mx.mean(mx.stack([
+            mx.mean(mx.square(mx.mean(probability, axis=(0, 1)) - 0.5))
+            for probability in probabilities
+        ]))
+        confidence = mx.mean(mx.stack([
+            mx.mean(probability * (1.0 - probability))
+            for probability in probabilities
+        ]))
+        decorrelation_terms = []
+        for logits in (query_logits, key_logits):
+            rerank_dimensions = logits.shape[-2] * logits.shape[-1]
+            values = mx.tanh(logits).reshape(-1, rerank_dimensions)
+            values = values - mx.mean(values, axis=0, keepdims=True)
+            covariance = (values.T @ values) / max(values.shape[0], 1)
+            variance = mx.diag(covariance)
+            covariance_scale = mx.sqrt(mx.maximum(
+                variance[:, None] * variance[None, :],
+                mx.array(1e-6, covariance.dtype),
+            ))
+            correlation = covariance / covariance_scale
+            off_diagonal = correlation * (
+                1.0 - mx.eye(correlation.shape[0], dtype=correlation.dtype)
+            )
+            dimensions = correlation.shape[0]
+            decorrelation_terms.append(
+                mx.sum(mx.square(off_diagonal))
+                / max(dimensions * (dimensions - 1), 1)
+            )
+        decorrelation = mx.mean(mx.stack(decorrelation_terms))
+        total = (
+            cross_entropy
+            + pairwise_weight * pairwise_loss
+            + balance_weight * balance
+            + decorrelation_weight * decorrelation
+            + 0.01 * confidence
+        )
+        return total, (
+            cross_entropy, pairwise_loss, balance, confidence, decorrelation
+        )
+
+
+class ProductQuantizedAttentionRouter(HierarchicalAttentionRouter):
+    """Four-byte differentiable product-quantized attention reranker."""
+
+    def __init__(self, width, tables, bits, rerank_bytes=4, centroids=256):
+        super().__init__(width, tables, bits, rerank_bytes=rerank_bytes)
+        subspace_width = self.rerank_query_projection.shape[-1] // rerank_bytes
+        initial = mx.random.normal((rerank_bytes, centroids, subspace_width))
+        self.pq_centroids = initial / mx.maximum(
+            mx.sqrt(mx.sum(mx.square(initial), axis=-1, keepdims=True)),
+            mx.array(1e-6, initial.dtype),
+        )
+
+    @staticmethod
+    def _normalized_subspaces(logits):
+        return logits / mx.maximum(
+            mx.sqrt(mx.sum(mx.square(logits), axis=-1, keepdims=True)),
+            mx.array(1e-6, logits.dtype),
+        )
+
+    def pq_rerank_loss(
+        self, x, teacher_probability, query_start, window, sink_tokens,
+        candidate_mask=None, retrieval_topk=32, hard_negatives=32,
+        score_temperature=0.25, assignment_temperature=0.1,
+        pairwise_weight=2.0, pairwise_margin=0.2,
+        balance_weight=0.1, quantization_weight=0.1,
+    ):
+        query_logits, key_logits = self.rerank_logits(x)
+        query = self._normalized_subspaces(query_logits[:, query_start:])
+        key = self._normalized_subspaces(key_logits)
+        centroids = self._normalized_subspaces(self.pq_centroids)
+        assignment_scores = mx.einsum("bktd,tcd->bktc", key, centroids)
+        soft_assignment = mx.softmax(
+            assignment_scores / assignment_temperature, axis=-1
+        )
+        hard_index = mx.argmax(assignment_scores, axis=-1)
+        hard_assignment = (
+            hard_index[..., None]
+            == mx.arange(centroids.shape[1]).reshape(1, 1, 1, -1)
+        ).astype(soft_assignment.dtype)
+        assignment = soft_assignment + mx.stop_gradient(
+            hard_assignment - soft_assignment
+        )
+        quantized_key = mx.einsum(
+            "bktc,tcd->bktd", assignment, centroids
+        )
+        scores = mx.einsum("bqtd,bktd->bqk", query, quantized_key)
+        query_positions = mx.arange(query_start, x.shape[1]).reshape(-1, 1)
+        key_positions = mx.arange(x.shape[1]).reshape(1, -1)
+        eligible = (key_positions < query_positions - window) & (
+            key_positions >= sink_tokens
+        )
+        if candidate_mask is not None:
+            eligible = eligible & candidate_mask.astype(mx.bool_)
+        masked_scores = mx.where(
+            eligible, scores / score_temperature,
+            mx.array(-1e9, scores.dtype),
+        )
+        log_probability = masked_scores - mx.logsumexp(
+            masked_scores, axis=-1, keepdims=True
+        )
+        target = mx.where(
+            eligible, teacher_probability, mx.zeros_like(teacher_probability)
+        )
+        target = target / mx.maximum(
+            mx.sum(target, axis=-1, keepdims=True),
+            mx.array(1e-12, target.dtype),
+        )
+        cross_entropy = -mx.mean(mx.sum(target * log_probability, axis=-1))
+
+        label_count = min(retrieval_topk, teacher_probability.shape[-1])
+        teacher_order = mx.argsort(
+            -mx.where(
+                eligible, teacher_probability,
+                mx.array(-1.0, teacher_probability.dtype),
+            ), axis=-1,
+        )
+        positive_indices = teacher_order[..., :label_count]
+        positive_mass = mx.take_along_axis(target, positive_indices, axis=-1)
+        positive_weights = positive_mass / mx.maximum(
+            mx.sum(positive_mass, axis=-1, keepdims=True),
+            mx.array(1e-12, positive_mass.dtype),
+        )
+        teacher_rank = mx.argsort(teacher_order, axis=-1)
+        negative_mask = eligible & (teacher_rank >= label_count)
+        negative_order = mx.where(
+            negative_mask, mx.stop_gradient(scores),
+            mx.array(-1e9, scores.dtype),
+        )
+        negative_count = min(hard_negatives, teacher_probability.shape[-1])
+        negative_indices = mx.argsort(-negative_order, axis=-1)[
+            ..., :negative_count
+        ]
+        negative_valid = mx.take_along_axis(
+            negative_mask, negative_indices, axis=-1
+        ).astype(scores.dtype)
+        negative_weights = negative_valid / mx.maximum(
+            mx.sum(negative_valid, axis=-1, keepdims=True),
+            mx.array(1.0, scores.dtype),
+        )
+        positive_score = mx.take_along_axis(scores, positive_indices, axis=-1)
+        negative_score = mx.take_along_axis(scores, negative_indices, axis=-1)
+        pairwise_terms = mx.logaddexp(
+            mx.zeros_like(
+                positive_score[..., :, None] - negative_score[..., None, :]
+            ),
+            pairwise_margin - positive_score[..., :, None]
+            + negative_score[..., None, :],
+        )
+        pairwise_weights = (
+            positive_weights[..., :, None] * negative_weights[..., None, :]
+        )
+        pairwise = mx.sum(pairwise_terms * pairwise_weights) / mx.maximum(
+            mx.sum(pairwise_weights), mx.array(1.0, pairwise_weights.dtype)
+        )
+        usage = mx.mean(soft_assignment, axis=(0, 1))
+        balance = mx.mean(mx.square(usage - 1.0 / centroids.shape[1]))
+        quantization = mx.mean(mx.square(key - quantized_key))
+        total = (
+            cross_entropy + pairwise_weight * pairwise
+            + balance_weight * balance
+            + quantization_weight * quantization
+        )
+        return total, (cross_entropy, pairwise, balance, quantization)
+
+    def retention_scores(self, x):
+        return x @ self.retention_projection
+
+    def attention_retention_loss(
+        self, x, teacher_probability, retrieval_topk=32,
+        pairwise_weight=1.0, pairwise_margin=1.0,
+        leaf_pairwise_weight=0.0, leaf_storage_capacity=0,
+    ):
+        salience = mx.sum(teacher_probability, axis=1)
+        target = salience / mx.maximum(
+            mx.sum(salience, axis=-1, keepdims=True),
+            mx.array(1e-12, salience.dtype),
+        )
+        scores = self.retention_scores(x)
+        log_probability = scores - mx.logsumexp(scores, axis=-1, keepdims=True)
+        cross_entropy = -mx.mean(mx.sum(target * log_probability, axis=-1))
+
+        keep = min(retrieval_topk, x.shape[1])
+        order = mx.argsort(-salience, axis=-1)
+        positive_indices = order[..., :keep]
+        rank = mx.argsort(order, axis=-1)
+        negative_mask = rank >= keep
+        negative_order = mx.argsort(
+            -mx.where(
+                negative_mask, mx.stop_gradient(scores),
+                mx.array(-1e9, scores.dtype),
+            ),
+            axis=-1,
+        )[..., :keep]
+        positive_score = mx.take_along_axis(scores, positive_indices, axis=-1)
+        negative_score = mx.take_along_axis(scores, negative_order, axis=-1)
+        positive_mass = mx.take_along_axis(salience, positive_indices, axis=-1)
+        positive_weight = positive_mass / mx.maximum(
+            mx.sum(positive_mass, axis=-1, keepdims=True),
+            mx.array(1e-12, positive_mass.dtype),
+        )
+        pairwise = mx.logaddexp(
+            mx.zeros_like(positive_score[..., :, None] - negative_score[..., None, :]),
+            pairwise_margin
+            - positive_score[..., :, None]
+            + negative_score[..., None, :],
+        )
+        pairwise_loss = mx.mean(mx.sum(
+            pairwise * positive_weight[..., :, None], axis=-2
+        ))
+        leaf_pairwise_loss = mx.array(0.0, scores.dtype)
+        if leaf_pairwise_weight != 0.0:
+            if leaf_storage_capacity < 1:
+                raise ValueError(
+                    "leaf_storage_capacity must be positive for leaf retention"
+                )
+            _, key_logits = self.logits(x)
+            key_bits = (key_logits >= 0.0).astype(mx.int32)
+            powers = mx.power(
+                mx.array(2, dtype=mx.int32), mx.arange(self.bits, dtype=mx.int32)
+            )
+            key_codes = mx.sum(key_bits * powers.reshape(1, 1, 1, -1), axis=-1)
+            score_difference = scores[:, :, None] - scores[:, None, :]
+            leaf_terms = []
+            for table in range(self.tables):
+                adjacent = (table + 1) % self.tables
+                composite = (
+                    key_codes[:, :, table] * (1 << self.bits)
+                    + key_codes[:, :, adjacent]
+                )
+                same_leaf = composite[:, :, None] == composite[:, None, :]
+                higher_salience = salience[:, None, :] > salience[:, :, None]
+                within_leaf_rank = mx.sum(
+                    (same_leaf & higher_salience).astype(mx.int32), axis=-1
+                )
+                should_retain = within_leaf_rank < leaf_storage_capacity
+                boundary_pairs = (
+                    same_leaf
+                    & should_retain[:, :, None]
+                    & (~should_retain[:, None, :])
+                )
+                weights = (
+                    boundary_pairs.astype(scores.dtype)
+                    * salience[:, :, None]
+                )
+                terms = mx.logaddexp(
+                    mx.zeros_like(score_difference),
+                    pairwise_margin - score_difference,
+                )
+                leaf_terms.append(
+                    mx.sum(terms * weights)
+                    / mx.maximum(mx.sum(weights), mx.array(1.0, weights.dtype))
+                )
+            leaf_pairwise_loss = mx.mean(mx.stack(leaf_terms))
+        total = (
+            cross_entropy + pairwise_weight * pairwise_loss
+            + leaf_pairwise_weight * leaf_pairwise_loss
+        )
+        return total, (cross_entropy, pairwise_loss, leaf_pairwise_loss)
+
+    def hierarchical_loss(
+        self, x, teacher_probability, query_start, window, sink_tokens,
+        mass_cover=0.95, mass_gamma=0.5, max_positives=56,
+        positive_weight=1.0, hard_negative_weight=1.0,
+        hard_negative_temperature=1.0, rerank_weight=1.0,
+        rerank_temperature=1.0, balance_weight=10.0,
+        decorrelation_weight=0.0, address_entropy_weight=0.0,
+        leaf_overflow_weight=0.0, leaf_storage_capacity=0,
+        candidate_set_weight=0.0, candidate_set_temperature=16.0,
+        candidate_set_query_stride=1, secondary_probes=1,
+        retrieval_topk=32,
+        deployed_candidate_mask=None, exact_boundary_weight=0.0,
+        exact_boundary_negative_weight=0.0,
+        exact_boundary_query_stride=1,
+        reranker="path-hamming",
+    ):
+        """Train the exact adjacent-table path used by hierarchical lookup.
+
+        A target assigned to path t must match both primary table t and secondary
+        table t+1. Positives cover a declared amount of distant teacher mass, while
+        the negative term concentrates on low-mass keys closest to each current path.
+        The reranking term uses minimum adjacent-pair Hamming distance, matching the
+        path-aware selector without adding fingerprint bytes.
+        """
+        query_logits, key_logits = self.logits(x)
+        query_logits = query_logits[:, query_start:]
+        query_code = self.straight_through_sign(query_logits)
+        key_code = self.straight_through_sign(key_logits)
+        dot_by_table = mx.einsum("bqtd,bktd->bqkt", query_code, key_code)
+        distance_by_table = (self.bits - dot_by_table) / 2.0
+        secondary_distance = mx.concatenate(
+            [distance_by_table[..., 1:], distance_by_table[..., :1]], axis=-1
+        )
+        path_distance = distance_by_table + secondary_distance
+        # A positive margin means an exact 16-bit primary/secondary path match.
+        path_match_logit = 2.0 * (0.5 - path_distance)
+
+        query_positions = mx.arange(query_start, x.shape[1]).reshape(-1, 1)
+        key_positions = mx.arange(x.shape[1]).reshape(1, -1)
+        eligible = (key_positions < query_positions - window) & (
+            key_positions >= sink_tokens
+        )
+
+        teacher_order = mx.argsort(-teacher_probability, axis=-1)
+        sorted_mass = mx.take_along_axis(
+            teacher_probability, teacher_order, axis=-1
+        )
+        cumulative_before = mx.cumsum(sorted_mass, axis=-1) - sorted_mass
+        sorted_rank = mx.arange(teacher_probability.shape[-1]).reshape(1, 1, -1)
+        selected_sorted = (
+            (cumulative_before < mass_cover)
+            & (sorted_rank < max_positives)
+            & (sorted_mass > 0.0)
+        )
+        teacher_rank = mx.argsort(teacher_order, axis=-1)
+        selected_positive = mx.take_along_axis(
+            selected_sorted, teacher_rank, axis=-1
+        ) & eligible
+        table_index = mx.arange(self.tables).reshape(1, 1, 1, -1)
+        assigned_positive = selected_positive[..., None] & (
+            (teacher_rank[..., None] % self.tables) == table_index
+        )
+
+        powered_mass = mx.power(
+            mx.maximum(teacher_probability, mx.array(0.0, teacher_probability.dtype)),
+            mass_gamma,
+        ) * selected_positive.astype(teacher_probability.dtype)
+        powered_mass = powered_mass / mx.maximum(
+            mx.sum(powered_mass, axis=-1, keepdims=True),
+            mx.array(1e-12, powered_mass.dtype),
+        )
+        positive_weights = powered_mass[..., None] * assigned_positive.astype(
+            powered_mass.dtype
+        )
+        positive_loss = mx.sum(
+            positive_weights
+            * mx.logaddexp(mx.zeros_like(path_match_logit), -path_match_logit)
+        ) / mx.maximum(
+            mx.sum(positive_weights), mx.array(1.0, positive_weights.dtype)
+        )
+
+        negative_mask = eligible[..., None] & (~selected_positive[..., None])
+        negative_logits = -mx.stop_gradient(path_distance) / hard_negative_temperature
+        negative_logits = mx.where(
+            negative_mask,
+            negative_logits,
+            mx.array(-1e9, negative_logits.dtype),
+        )
+        negative_weights = mx.softmax(negative_logits, axis=2) * negative_mask.astype(
+            negative_logits.dtype
+        )
+        negative_weights = negative_weights / mx.maximum(
+            mx.sum(negative_weights, axis=2, keepdims=True),
+            mx.array(1e-12, negative_weights.dtype),
+        )
+        negative_weights = mx.stop_gradient(negative_weights)
+        hard_negative_loss = mx.mean(mx.sum(
+            negative_weights
+            * mx.logaddexp(mx.zeros_like(path_match_logit), path_match_logit),
+            axis=2,
+        ))
+
+        if reranker == "path-hamming":
+            rerank_distance = mx.min(path_distance, axis=-1)
+        elif reranker == "full-hamming":
+            rerank_distance = mx.sum(distance_by_table, axis=-1)
+        else:
+            raise ValueError("reranker must be path-hamming or full-hamming")
+        rerank_scores = -rerank_distance / rerank_temperature
+        rerank_scores = mx.where(
+            eligible, rerank_scores, mx.array(-1e9, rerank_scores.dtype)
+        )
+        rerank_log_probability = rerank_scores - mx.logsumexp(
+            rerank_scores, axis=-1, keepdims=True
+        )
+        rerank_target = mx.power(
+            mx.maximum(teacher_probability, mx.array(0.0, teacher_probability.dtype)),
+            mass_gamma,
+        )
+        rerank_target = rerank_target / mx.maximum(
+            mx.sum(rerank_target, axis=-1, keepdims=True),
+            mx.array(1e-12, rerank_target.dtype),
+        )
+        rerank_cross_entropy = -mx.mean(mx.sum(
+            rerank_target * rerank_log_probability, axis=-1
+        ))
+
+        probabilities = [mx.sigmoid(query_logits), mx.sigmoid(key_logits)]
+        balance = mx.mean(mx.stack([
+            mx.mean(mx.square(mx.mean(probability, axis=(0, 1)) - 0.5))
+            for probability in probabilities
+        ]))
+        address_values = mx.arange(1 << self.bits, dtype=mx.int32)
+        bit_offsets = mx.arange(self.bits, dtype=mx.int32)
+        address_patterns = (
+            mx.right_shift(address_values[:, None], bit_offsets[None, :])
+            & mx.array(1, dtype=mx.int32)
+        ).astype(query_logits.dtype)
+        address_entropy_terms = []
+        for probability in probabilities:
+            safe_probability = mx.clip(probability, 1e-6, 1.0 - 1e-6)
+            log_probability = mx.log(safe_probability)
+            log_inverse = mx.log(1.0 - safe_probability)
+            code_log_probability = mx.sum(
+                log_probability[..., None, :] * address_patterns
+                + log_inverse[..., None, :] * (1.0 - address_patterns),
+                axis=-1,
+            )
+            mean_code_probability = mx.mean(
+                mx.exp(code_log_probability), axis=(0, 1)
+            )
+            normalized_kl = mx.sum(
+                mean_code_probability * mx.log(mx.maximum(
+                    mean_code_probability * float(1 << self.bits),
+                    mx.array(1e-12, mean_code_probability.dtype),
+                )),
+                axis=-1,
+            ) / math.log(float(1 << self.bits))
+            address_entropy_terms.append(mx.mean(normalized_kl))
+        address_entropy = mx.mean(mx.stack(address_entropy_terms))
+        leaf_overflow = mx.array(0.0, query_logits.dtype)
+        if leaf_overflow_weight != 0.0:
+            if leaf_storage_capacity < 1:
+                raise ValueError(
+                    "leaf_storage_capacity must be positive when leaf overflow "
+                    "regularization is enabled"
+                )
+            # Match the deployed primary+adjacent-secondary leaf exactly in the
+            # forward pass, while differentiating through the probability that
+            # two keys share every bit.  Unlike global entropy, this penalizes
+            # only keys that currently collide in an actually over-capacity leaf.
+            key_probability = probabilities[1]
+            hard_key_bits = ((key_code + 1.0) / 2.0)
+            overflow_terms = []
+
+            def exact_table_match(probability, hard_bits):
+                soft_bit_match = (
+                    probability[:, :, None, :] * probability[:, None, :, :]
+                    + (1.0 - probability[:, :, None, :])
+                    * (1.0 - probability[:, None, :, :])
+                )
+                hard_bit_match = (
+                    hard_bits[:, :, None, :] == hard_bits[:, None, :, :]
+                ).astype(soft_bit_match.dtype)
+                bit_match = soft_bit_match + mx.stop_gradient(
+                    hard_bit_match - soft_bit_match
+                )
+                return mx.prod(bit_match, axis=-1)
+
+            for table in range(self.tables):
+                adjacent = (table + 1) % self.tables
+                exact_leaf_match = exact_table_match(
+                    key_probability[:, :, table], hard_key_bits[:, :, table]
+                ) * exact_table_match(
+                    key_probability[:, :, adjacent], hard_key_bits[:, :, adjacent]
+                )
+                leaf_load = mx.sum(exact_leaf_match, axis=-1)
+                overflow = mx.maximum(
+                    leaf_load - float(leaf_storage_capacity),
+                    mx.array(0.0, leaf_load.dtype),
+                ) / float(leaf_storage_capacity)
+                overloaded = mx.stop_gradient((overflow > 0.0).astype(overflow.dtype))
+                overflow_terms.append(
+                    mx.sum(mx.square(overflow) * overloaded)
+                    / mx.maximum(
+                        mx.sum(overloaded), mx.array(1.0, overflow.dtype)
+                    )
+                )
+            leaf_overflow = mx.mean(mx.stack(overflow_terms))
+        candidate_set_mass = mx.array(0.0, query_logits.dtype)
+        if candidate_set_weight != 0.0:
+            if leaf_storage_capacity < 1:
+                raise ValueError(
+                    "leaf_storage_capacity must be positive when candidate-set "
+                    "training is enabled"
+                )
+            if secondary_probes < 1 or secondary_probes > self.bits + 1:
+                raise ValueError("secondary_probes must be in [1, bits + 1]")
+            if candidate_set_temperature <= 0.0:
+                raise ValueError("candidate_set_temperature must be positive")
+            if candidate_set_query_stride < 1:
+                raise ValueError("candidate_set_query_stride must be positive")
+
+            # Approximate the deployed bounded shortlist rather than optimizing
+            # address agreement in isolation.  Each primary+secondary path uses
+            # the same exact hard bits as lookup in the forward pass.  Gradients
+            # flow through bit-agreement probabilities.  A posting in a leaf of
+            # load L receives the reservoir survival estimate min(1, C/L), so
+            # useful mass in a hot leaf is worth less than useful mass in a leaf
+            # that can actually retain it.
+            key_probability = probabilities[1]
+            hard_key_bits = (key_code + 1.0) / 2.0
+            query_probability = probabilities[0][
+                :, ::candidate_set_query_stride
+            ]
+            hard_query_bits = ((query_code + 1.0) / 2.0)[
+                :, ::candidate_set_query_stride
+            ]
+            candidate_teacher = teacher_probability[
+                :, ::candidate_set_query_stride
+            ]
+            candidate_query_logits = query_logits[
+                :, ::candidate_set_query_stride
+            ]
+
+            def pair_distance(left_probability, left_bits, right_probability,
+                              right_bits):
+                soft_bit_match = (
+                    left_probability[:, :, None, :]
+                    * right_probability[:, None, :, :]
+                    + (1.0 - left_probability[:, :, None, :])
+                    * (1.0 - right_probability[:, None, :, :])
+                )
+                soft_distance = mx.sum(1.0 - soft_bit_match, axis=-1)
+                hard_distance = mx.sum(
+                    (left_bits[:, :, None, :] != right_bits[:, None, :, :])
+                    .astype(soft_distance.dtype),
+                    axis=-1,
+                )
+                return soft_distance + mx.stop_gradient(
+                    hard_distance - soft_distance
+                )
+
+            retained_probability = None
+            for table in range(self.tables):
+                adjacent = (table + 1) % self.tables
+                primary_distance = pair_distance(
+                    query_probability[:, :, table],
+                    hard_query_bits[:, :, table],
+                    key_probability[:, :, table],
+                    hard_key_bits[:, :, table],
+                )
+                uncertain = mx.argsort(
+                    mx.abs(candidate_query_logits[:, :, adjacent]), axis=-1
+                )[..., :max(secondary_probes - 1, 0)]
+                secondary_distances = [pair_distance(
+                    query_probability[:, :, adjacent],
+                    hard_query_bits[:, :, adjacent],
+                    key_probability[:, :, adjacent],
+                    hard_key_bits[:, :, adjacent],
+                )]
+                bit_indices = mx.arange(self.bits).reshape(1, 1, -1)
+                for probe in range(secondary_probes - 1):
+                    flip = bit_indices == uncertain[..., probe, None]
+                    flipped_probability = mx.where(
+                        flip, 1.0 - query_probability[:, :, adjacent],
+                        query_probability[:, :, adjacent],
+                    )
+                    flipped_bits = mx.where(
+                        flip, 1.0 - hard_query_bits[:, :, adjacent],
+                        hard_query_bits[:, :, adjacent],
+                    )
+                    secondary_distances.append(pair_distance(
+                        flipped_probability, flipped_bits,
+                        key_probability[:, :, adjacent],
+                        hard_key_bits[:, :, adjacent],
+                    ))
+                secondary_distance = mx.min(
+                    mx.stack(secondary_distances, axis=-1), axis=-1
+                )
+
+                # The load is exact in the forward pass and differentiable with
+                # respect to the same leaf bits.  Compute it one table at a time
+                # to preserve the existing bounded-memory behavior.
+                def exact_key_match(probability, hard_bits):
+                    soft_bit_match = (
+                        probability[:, :, None, :]
+                        * probability[:, None, :, :]
+                        + (1.0 - probability[:, :, None, :])
+                        * (1.0 - probability[:, None, :, :])
+                    )
+                    hard_bit_match = (
+                        hard_bits[:, :, None, :]
+                        == hard_bits[:, None, :, :]
+                    ).astype(soft_bit_match.dtype)
+                    bit_match = soft_bit_match + mx.stop_gradient(
+                        hard_bit_match - soft_bit_match
+                    )
+                    return mx.prod(bit_match, axis=-1)
+
+                same_leaf = exact_key_match(
+                    key_probability[:, :, table],
+                    hard_key_bits[:, :, table],
+                ) * exact_key_match(
+                    key_probability[:, :, adjacent],
+                    hard_key_bits[:, :, adjacent],
+                )
+                leaf_load = mx.sum(same_leaf, axis=-1)
+                survival = mx.minimum(
+                    mx.ones_like(leaf_load),
+                    float(leaf_storage_capacity) / mx.maximum(
+                        leaf_load, mx.array(1.0, leaf_load.dtype)
+                    ),
+                )
+                path_probability = mx.sigmoid(
+                    candidate_set_temperature
+                    * (0.5 - primary_distance - secondary_distance)
+                ) * survival[:, None, :]
+                path_probability = mx.clip(path_probability, 0.0, 1.0)
+                retained_probability = (
+                    path_probability
+                    if retained_probability is None else
+                    retained_probability + path_probability
+                    - retained_probability * path_probability
+                )
+            candidate_positions = (
+                query_start
+                + mx.arange(retained_probability.shape[1])
+                * candidate_set_query_stride
+            ).reshape(-1, 1)
+            candidate_keys = mx.arange(x.shape[1]).reshape(1, -1)
+            candidate_eligible = (
+                (candidate_keys < candidate_positions - window)
+                & (candidate_keys >= sink_tokens)
+            )
+            candidate_order = mx.argsort(
+                -mx.where(
+                    candidate_eligible,
+                    candidate_teacher,
+                    mx.array(-1.0, candidate_teacher.dtype),
+                ),
+                axis=-1,
+            )
+            candidate_rank = mx.argsort(candidate_order, axis=-1)
+            target_mask = candidate_eligible & (
+                candidate_rank < min(retrieval_topk, x.shape[1])
+            )
+            target_mass = mx.where(
+                target_mask, candidate_teacher,
+                mx.zeros_like(candidate_teacher),
+            )
+            normalized_target = target_mass / mx.maximum(
+                mx.sum(target_mass, axis=-1, keepdims=True),
+                mx.array(1e-12, target_mass.dtype),
+            )
+            captured_mass = mx.sum(
+                normalized_target * retained_probability, axis=-1
+            )
+            candidate_set_mass = -mx.mean(mx.log(mx.maximum(
+                captured_mass, mx.array(1e-8, captured_mass.dtype)
+            )))
+        exact_boundary_positive = mx.array(0.0, query_logits.dtype)
+        exact_boundary_negative = mx.array(0.0, query_logits.dtype)
+        if exact_boundary_weight != 0.0 or exact_boundary_negative_weight != 0.0:
+            if deployed_candidate_mask is None:
+                raise ValueError(
+                    "exact boundary training requires a deployed candidate mask"
+                )
+            if exact_boundary_query_stride < 1:
+                raise ValueError("exact_boundary_query_stride must be positive")
+            boundary_slice = slice(None, None, exact_boundary_query_stride)
+            boundary_path_distance = path_distance[:, boundary_slice]
+            boundary_path_match_logit = path_match_logit[:, boundary_slice]
+            boundary_eligible = eligible[boundary_slice]
+            boundary_teacher = teacher_probability[:, boundary_slice]
+            boundary_teacher_rank = teacher_rank[:, boundary_slice]
+            deployed = (
+                deployed_candidate_mask[:, boundary_slice].astype(mx.bool_)
+                & boundary_eligible
+            )
+            boundary_topk = boundary_teacher_rank < min(
+                retrieval_topk, teacher_probability.shape[-1]
+            )
+            target_topk = boundary_topk & boundary_eligible
+            missing = target_topk & (~deployed)
+            missing_mass = mx.where(
+                missing, boundary_teacher,
+                mx.zeros_like(boundary_teacher),
+            )
+            missing_weights = missing_mass / mx.maximum(
+                mx.sum(missing_mass, axis=-1, keepdims=True),
+                mx.array(1e-12, missing_mass.dtype),
+            )
+            # Assign each exact deployed miss to its currently nearest complete
+            # primary+secondary path.  The straight-through path logits then
+            # pull the missed key across the actual hard membership boundary.
+            best_positive_table = mx.argmin(
+                mx.stop_gradient(boundary_path_distance), axis=-1
+            )
+            positive_table_mask = (
+                best_positive_table[..., None] == table_index
+            ).astype(boundary_path_match_logit.dtype)
+            positive_terms = mx.logaddexp(
+                mx.zeros_like(boundary_path_match_logit),
+                -boundary_path_match_logit,
+            )
+            positive_boundary_weights = (
+                missing_weights[..., None] * positive_table_mask
+            )
+            exact_boundary_positive = mx.sum(
+                positive_terms * positive_boundary_weights
+            ) / mx.maximum(
+                mx.sum(positive_boundary_weights),
+                mx.array(1.0, positive_boundary_weights.dtype),
+            )
+
+            # Push only actual false-positive occupants away, and only on paths
+            # they match exactly in the hard forward pass.  This targets the
+            # finite-capacity boundary without penalizing unrelated history.
+            false_retained = deployed & (~target_topk)
+            exact_path = mx.stop_gradient(
+                (boundary_path_distance < 0.5).astype(
+                    boundary_path_match_logit.dtype
+                )
+            )
+            negative_boundary_weights = (
+                false_retained[..., None].astype(
+                    boundary_path_match_logit.dtype
+                )
+                * exact_path
+            )
+            negative_boundary_weights = negative_boundary_weights / mx.maximum(
+                mx.sum(negative_boundary_weights, axis=2, keepdims=True),
+                mx.array(1.0, negative_boundary_weights.dtype),
+            )
+            negative_terms = mx.logaddexp(
+                mx.zeros_like(boundary_path_match_logit),
+                boundary_path_match_logit,
+            )
+            exact_boundary_negative = mx.mean(mx.sum(
+                negative_terms * negative_boundary_weights, axis=2
+            ))
+        confidence = mx.mean(mx.stack([
+            mx.mean(probability * (1.0 - probability))
+            for probability in probabilities
+        ]))
+        decorrelation_terms = []
+        for logits in (query_logits, key_logits):
+            values = mx.tanh(logits).reshape(-1, self.tables * self.bits)
+            values = values - mx.mean(values, axis=0, keepdims=True)
+            covariance = (values.T @ values) / max(values.shape[0], 1)
+            variance = mx.diag(covariance)
+            covariance_scale = mx.sqrt(mx.maximum(
+                variance[:, None] * variance[None, :],
+                mx.array(1e-6, covariance.dtype),
+            ))
+            correlation = covariance / covariance_scale
+            off_diagonal = correlation * (
+                1.0 - mx.eye(correlation.shape[0], dtype=correlation.dtype)
+            )
+            dimensions = correlation.shape[0]
+            decorrelation_terms.append(
+                mx.sum(mx.square(off_diagonal))
+                / max(dimensions * (dimensions - 1), 1)
+            )
+        decorrelation = mx.mean(mx.stack(decorrelation_terms))
+        total = (
+            positive_weight * positive_loss
+            + hard_negative_weight * hard_negative_loss
+            + rerank_weight * rerank_cross_entropy
+            + balance_weight * balance
+            + decorrelation_weight * decorrelation
+            + address_entropy_weight * address_entropy
+            + leaf_overflow_weight * leaf_overflow
+            + candidate_set_weight * candidate_set_mass
+            + exact_boundary_weight * exact_boundary_positive
+            + exact_boundary_negative_weight * exact_boundary_negative
+            + 0.01 * confidence
+        )
+        selected_count = mx.mean(mx.sum(
+            selected_positive.astype(mx.float32), axis=-1
+        ))
+        selected_mass = mx.mean(mx.sum(
+            teacher_probability * selected_positive.astype(teacher_probability.dtype),
+            axis=-1,
+        ))
+        return total, (
+            positive_loss,
+            hard_negative_loss,
+            rerank_cross_entropy,
+            balance,
+            confidence,
+            selected_count,
+            selected_mass,
+            decorrelation,
+            address_entropy,
+            leaf_overflow,
+            candidate_set_mass,
+            exact_boundary_positive,
+            exact_boundary_negative,
+        )
+
+
+# The PQ subclass is declared before these pre-existing hierarchy methods so it
+# can reuse them. Keep the non-PQ router API intact for existing checkpoints.
+HierarchicalAttentionRouter.retention_scores = (
+    ProductQuantizedAttentionRouter.retention_scores
+)
+HierarchicalAttentionRouter.attention_retention_loss = (
+    ProductQuantizedAttentionRouter.attention_retention_loss
+)
+HierarchicalAttentionRouter.hierarchical_loss = (
+    ProductQuantizedAttentionRouter.hierarchical_loss
+)
+
+
 def parse_paths(spec, defaults):
     values = [value.strip() for value in spec.split(",") if value.strip()] if spec else defaults
     paths = [pathlib.Path(value) for value in values]
@@ -194,7 +1263,10 @@ def token_segments(tokenizer, paths, seq_len, stride, limit):
     return segments
 
 
-def donor_example(model, tokens, layer_index, window, sink_tokens):
+def donor_example(
+    model, tokens, layer_index, window, sink_tokens,
+    teacher_target="contribution",
+):
     body = language_body(model)
     h = body.embed_tokens(tokens)
     attention_mask = create_attention_mask(h)
@@ -255,9 +1327,14 @@ def donor_example(model, tokens, layer_index, window, sink_tokens):
     eligible = (key_positions < query_positions - window) & (key_positions >= sink_tokens)
     scores = mx.where(eligible, scores, mx.array(-1e9, scores.dtype))
     attention_probability = mx.softmax(scores.astype(mx.float32), axis=-1)
-    value_norm = mx.sqrt(mx.sum(mx.square(values.astype(mx.float32)), axis=-1))
-    contribution = attention_probability * value_norm[:, :, None, :]
-    teacher_probability = mx.mean(contribution, axis=1)
+    if teacher_target == "attention":
+        teacher_probability = mx.mean(attention_probability, axis=1)
+    elif teacher_target == "contribution":
+        value_norm = mx.sqrt(mx.sum(mx.square(values.astype(mx.float32)), axis=-1))
+        contribution = attention_probability * value_norm[:, :, None, :]
+        teacher_probability = mx.mean(contribution, axis=1)
+    else:
+        raise ValueError("teacher_target must be attention or contribution")
     teacher_probability = teacher_probability / mx.maximum(
         mx.sum(teacher_probability, axis=-1, keepdims=True),
         mx.array(1e-12, teacher_probability.dtype),

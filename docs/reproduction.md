@@ -656,6 +656,286 @@ The fingerprint-policy follow-ups use the same benchmark command with the
 corresponding `--bucket-capacity` and `--retention-policy` values. They are recorded
 as negative follow-up evidence rather than included in the five-way plot.
 
+Run the sparse hierarchical milestone separately. The 32 directory reads are charged
+at five bytes each (32-bit posting start plus 8-bit count), along with at most 224
+position/fingerprint pairs:
+
+```bash
+python3 mlx_routing_scan_bench.py \
+  --lengths 262144,1048576,2097152 --queries 64 --k 32 \
+  --tables 4 --bits 16 --probes 2 \
+  --index-kind sparse-hierarchical \
+  --secondary-bits 8 --secondary-probes 4 --bucket-capacity 7 \
+  --retention-policy reservoir \
+  --warmups 4 --repeats 7 --recall-batch 1 \
+  --output runs/routing-sparse-hierarchical-s8p4c7-256k-2m.json
+
+python3 mlx_hierarchical_routing_report.py \
+  runs/routing-sparse-hierarchical-s8p4c7-256k-2m.json \
+  --comparison runs/routing-retention-c32-reservoir-256k-2m.json \
+  --comparison runs/routing-hierarchical-s2p3c10-2m.json \
+  --comparison runs/routing-hierarchical-s4p4c8-2m.json \
+  --markdown-output runs/routing-sparse-hierarchical-s8p4c7-256k-2m.md \
+  --plot-output docs/assets/hierarchical-routing-frontier.svg
+```
+
+The rejected dense hierarchical variants use `--index-kind hierarchical` with
+`--secondary-bits 2 --secondary-probes 3 --bucket-capacity 10` and
+`--secondary-bits 4 --secondary-probes 4 --bucket-capacity 8`, respectively. Both
+use reservoir retention and the same 2M seed/query protocol. Run all long-context
+variants sequentially; the final sparse sweep peaks at 768 MB on the reference laptop.
+
+Evaluate the hierarchy on captured LFM2.5-350M layer-14 states after downloading or
+training the three router checkpoints named below. This computes the dense attention
+teacher in streaming chunks and writes both actual and oracle distant-mass metrics:
+
+```bash
+TOKENIZERS_PARALLELISM=false python3 mlx_lfm_hierarchical_eval.py \
+  --lengths 256 --corpora wikitext2,pg19 --segments-per-corpus 1 \
+  --routers \
+runs/lfm2.5-layer14-hard-hamming-top32-pos10-seed0.safetensors,\
+runs/lfm2.5-layer14-hard-hamming-top32-pos10-seed1.safetensors,\
+runs/lfm2.5-layer14-hard-hamming-top32-pos10-seed2.safetensors \
+  --query-chunk 8 --key-chunk 128 --warmups 2 --repeats 3 \
+  --output runs/lfm2.5-hierarchical-real-states-256-three-seed.json
+```
+
+For the progressive single-seed diagnostic, use `--lengths 512,1024`,
+`--corpora wikitext2`, and only the seed-0 checkpoint. It peaked at 1,276 MB on the
+reference laptop. The 224-candidate oracle is teacher-informed and therefore an upper
+bound under the same posting-read budget, not an implemented retrieval method. Do not
+describe total attention-mass recall as long-range recall; use the separately reported
+`distant_attention_mass_recall` field.
+
+The accepted attention-mass-aligned evaluation uses adaptive capacity-32 storage,
+three secondary probes, capacity 14 per queried leaf, and four-byte rerank codes. Run
+the accepted seed-0/2 confidence checkpoints together, and the accepted seed-1
+decoder checkpoint separately because they use different rerank functions:
+
+```bash
+TOKENIZERS_PARALLELISM=false python3 mlx_lfm_hierarchical_eval.py \
+  --routers runs/lfm2.5-hierarchical-attention-rerank32-confidence-trained-seed0.safetensors,\
+runs/lfm2.5-hierarchical-attention-confidence-adaptive32-seed2.safetensors \
+  --lengths 256,512,1024 --corpora wikitext2,pg19 --segments-per-corpus 1 \
+  --secondary-probes 3 --leaf-capacity 14 --storage-capacity 32 \
+  --fingerprint-bytes 4 --reranker confidence-hamming \
+  --confidence-power 1 --confidence-mix 0.75 --retention-policy reservoir \
+  --output runs/lfm2.5-hierarchical-attention-seeds0-2.json
+
+TOKENIZERS_PARALLELISM=false python3 mlx_lfm_hierarchical_eval.py \
+  --routers runs/lfm2.5-hierarchical-attention-decoder-pg19-wide-seed1.safetensors \
+  --lengths 256,512,1024 --corpora wikitext2,pg19 --segments-per-corpus 1 \
+  --secondary-probes 3 --leaf-capacity 14 --storage-capacity 32 \
+  --fingerprint-bytes 4 --reranker decoder-code --retention-policy reservoir \
+  --output runs/lfm2.5-hierarchical-attention-seed1.json
+```
+
+For output recovery, use `mlx_hierarchical_output_recovery.py` with the matching
+router/reranker, 32 training segments per corpus and 2,000 steps at 256, or 24
+segments and 2,500 steps at 512. Do not run the present recovery implementation at
+1,024: a reduced eight-segment pilot reached 1,905 MB and was stopped above the
+1,792 MB cap.
+
+The best fixed-byte seed-0 512-token scorer uses a 40-bit code, six secondary
+probes, and six postings per leaf. Its canonical evaluation command is:
+
+```bash
+TOKENIZERS_PARALLELISM=false python3 mlx_lfm_hierarchical_eval.py \
+  --routers runs/lfm2.5-joint-binary40-p6c6-512-wide-seed0.safetensors \
+  --lengths 512 --corpora wikitext2,pg19 --segments-per-corpus 1 \
+  --secondary-probes 6 --leaf-capacity 6 --storage-capacity 32 \
+  --fingerprint-bytes 5 --reranker joint-binary-attention \
+  --query-chunk 8 --key-chunk 256 --warmups 3 --repeats 5 \
+  --memory-limit-mb 1792 --cache-limit-mb 64 \
+  --output runs/lfm2.5-joint-binary40-p6c6-512-wide-seed0-eval512.json
+```
+
+This row is a near miss (78.81%/79.62% of the WikiText/PG-19 `K=32` oracle),
+not an accepted router. The 48-bit binary, 40/56-bit VQ, teacher-top-32,
+query-only, and joint query/key checkpoints in `runs/` are rejected seed-0
+variants. Do not replicate them across seeds. The next training command should use
+`mlx_hierarchical_router_train.py --train-component address --seq-len 512` with
+the 40-bit 6x6 allocation and a held-out ceiling check before reranker training;
+the address-only checkpoint must be merged with the fixed scorer without silently
+discarding its joint decoder weights.
+
+That address-only experiment has been completed and rejected. The trainer now saves
+the initialized scorer tensors while replacing only query/key address projections.
+The final bounded regularization checks add `--address-entropy-weight 10` and `30`
+to the same 4,000-step, 128-segment-per-corpus command. Re-evaluate either checkpoint
+with the canonical command above, replacing `--routers` and `--output` accordingly:
+
+```bash
+--routers runs/lfm2.5-address512-entropy10-binary40-p6c6-wide-seed0.safetensors
+--output runs/lfm2.5-address512-entropy10-binary40-p6c6-wide-seed0-eval512.json
+```
+
+Entropy 10 reaches only 77.47%/77.95% oracle-relative recall and entropy 30 reaches
+74.20%/77.53%. Both stay at 2,832 bytes/query; neither should be replicated across
+seeds. The next implementation should expose deployed leaf overflow to the training
+objective or learn bounded retention. Do not continue scalar entropy/balance sweeps.
+
+The capacity-aware implementation adds `--leaf-overflow-weight` and uses
+`--storage-capacity 32`. Full 512-token runs require `--memory-limit-mb 1760
+--cache-limit-mb 16`; the optimized loss peaks at 1,774.6 MB. The accepted bounded
+checks are weights 0.1 and 0.3, producing checkpoints named
+`lfm2.5-address512-overflow{0.1,0.3}-binary40-p6c6-wide-seed0.safetensors`.
+Canonical evaluation is the same command above. Weight 0.3 passes WikiText at 80.15%
+but fails PG-19 at 77.88%; it is not an accepted router and must not be replicated.
+The next experiment should train and deploy attention-aware retention scores inside
+over-capacity leaves.
+
+Retention-only training must preserve the initialization checkpoint and replace only
+`retention_projection`; the smoke contract asserts this across all 14 tensors. The
+global run uses `--train-component retention --lr 0.003 --steps 4000`. The
+leaf-conditioned run additionally uses `--leaf-retention-weight 1` with
+`--storage-capacity 32`. Evaluate both with `--retention-policy learned`.
+The resulting global and leaf checkpoints reach 79.42%/79.20% and 79.24%/79.36%
+oracle-relative recall respectively, so neither should be replicated. The next
+reproduction addition should be an explicitly noncausal oracle leaf-retention ceiling.
+
+The oracle ceiling is available as `--retention-policy oracle`. It computes true
+future distant-attention salience, labels rows with
+`retention_scope=noncausal_future_distant_attention_oracle`, and reports reservoir-
+equivalent lookup timing with oracle score computation excluded. On the original
+40-bit checkpoint it reaches 79.25%/80.47%, so it is a negative ceiling rather than a
+deployable result. Address interpolation checkpoints at weights 0.25, 0.50, and 0.75
+also fail; do not select further blends using the canonical held-out segments.
+
+The subsequent domain-balanced checks are also negative. Their machine-readable
+canonical reports are:
+
+```text
+runs/lfm2.5-address512-groupdro0.25-overflow0.3-binary40-p6c6-wide-seed0-eval512.json
+runs/lfm2.5-groupdro0.25-joint-binary40-p6c6-512-wide-seed0-eval512.json
+runs/lfm2.5-tablemix-joint-binary40-p6c6-512-wide-seed0-eval512.json
+runs/lfm2.5-address512-domain-groupdro0.25-overflow0.3-binary40-p6c6-wide-seed0-eval512.json
+```
+
+They reach 80.66%/77.99%, 80.21%/78.16%, 78.78%/78.42%, and 79.07%/80.91%
+WikiText/PG-19 oracle-relative recall respectively. `mlx_address_table_mix.py` must
+be given reserved training-split segments for selection; canonical segment 0 is only
+for the final one-shot evaluation. None of these checkpoints should be replicated or
+used for output recovery. The next reproduction command should accompany a new
+candidate-set-level joint objective, not another scalar weighting or table-mask sweep.
+
+The first candidate-set surrogate checkpoint and canonical report are:
+
+```text
+runs/lfm2.5-address512-candidateset10-groupdro0.25-binary40-p6c6-wide-seed0.safetensors
+runs/lfm2.5-address512-candidateset10-groupdro0.25-binary40-p6c6-wide-seed0-eval512.json
+```
+
+It uses weight 10, temperature 16, query stride 16, six secondary probes, storage
+capacity 32, and Group-DRO beta 0.25. The run peaks at 1,771.0 MB and reaches only
+74.87%/75.29% canonical oracle-relative recall. It is a rejected diagnostic. The
+stride-8 attempt exceeded the established peak envelope at 1,780.7 MB, was interrupted,
+and wrote no checkpoint. Do not reproduce a weight sweep using canonical segment 0.
+
+Exact-boundary mining is enabled with `--exact-boundary-weight` and
+`--exact-boundary-negative-weight`; `--exact-boundary-query-stride` bounds the extra
+graph. Deployed masks are bit-packed and examples are host-backed automatically. The
+accepted two-phase diagnostic uses weights 1 and 0.5, stride 8, overflow weight 0.3,
+1,000 steps per phase, and remaps by using phase 1 as phase 2's initialization. Its
+canonical report is:
+
+```text
+runs/lfm2.5-address512-exactboundary-overflow0.3-phase2-binary40-p6c6-wide-seed0-eval512.json
+```
+
+It reaches only 77.48%/78.14% WikiText/PG-19 oracle-relative recall. The matching
+linear scorer refresh and report are prefixed
+`lfm2.5-exactboundary-overflow0.3-joint-binary40-p6c6-512-wide-seed0`; they reach
+77.47%/77.98%. These are rejected seed-0 diagnostics and should not be replicated.
+
+The unified interleaved trainer is `mlx_joint_binary_attention_train.py
+--joint-address`. The bounded pairwise run uses `--pairwise-weight 1
+--pairwise-margin 0.2`, address overflow weight 0.3, exact boundary weights 1/0.5,
+boundary stride 8, and two 1,000-step phases with phase 1 as phase 2 initialization.
+Its selected checkpoint and canonical report are:
+
+```text
+runs/lfm2.5-joint-exact-pairwise-phase2-binary40-p6c6-512-wide-seed0.safetensors
+runs/lfm2.5-joint-exact-pairwise-phase2-binary40-p6c6-512-wide-seed0-eval512.json
+```
+
+The reserved pairwise loss improves from 0.3561 to 0.3503, but canonical
+WikiText/PG-19 oracle-relative recall is only 78.51%/79.61%. Traffic remains 2,832
+bytes/query, eviction is 14.82%/13.33%, and routing is about 794 us/query. The
+no-pairwise phase-2 checkpoint reaches 78.45%/79.49%. Both are rejected seed-0
+diagnostics: do not run a third phase, output recovery, or seed replication.
+
+The optional threshold representation is enabled by adding
+`--joint-address-thresholds` to the same unified command. It freezes query/key
+projection matrices and learns only asymmetric per-table sign biases. The selected
+checkpoint and report are:
+
+```text
+runs/lfm2.5-joint-threshold-phase2-binary40-p6c6-512-wide-seed0.safetensors
+runs/lfm2.5-joint-threshold-phase2-binary40-p6c6-512-wide-seed0-eval512.json
+```
+
+It reaches only 78.31%/78.37% WikiText/PG-19 oracle-relative recall at 2,832
+bytes/query. This is worse than the zero-threshold pairwise checkpoint and should not
+be swept or replicated. Its purpose is to establish that moving sign boundaries
+alone does not solve the addressability/retention tradeoff.
+
+Direct categorical address training is enabled with
+`--joint-address-categorical --address-categorical-temperature 1`. It initializes
+all 256 logits per table from the binary projection so the top-1 category exactly
+matches the original byte before training. The selected checkpoint and corrected
+canonical report are:
+
+```text
+runs/lfm2.5-joint-categorical-phase2-binary40-p6c6-512-wide-seed0.safetensors
+runs/lfm2.5-joint-categorical-phase2-binary40-p6c6-512-wide-seed0-eval512.json
+```
+
+Use the same two 1,000-step phase/remine protocol and `--address-lr 0.0001`. The
+result is a rejected diagnostic: 47.71%/48.93% WikiText/PG-19 oracle-relative recall,
+0.366%/0.708% eviction, and 2,832 bytes/query. Training peaks at 1,075.1 MB. The
+current report was regenerated after fixing the timed lookup to use categorical
+query/key addresses; its 794.1/781.8 us timings and categorical occupancy are valid.
+Do not reproduce a scalar sweep or a third phase.
+
+The residual-secondary branch is enabled with
+`--joint-address-residual-secondary`. It freezes the binary primary projections and
+learns only one 256-way secondary assignment per table. Run the same two 1,000-step
+phase/remine protocol, using phase 1 as phase 2's `--router`, then evaluate:
+
+```bash
+TOKENIZERS_PARALLELISM=false python3 mlx_lfm_hierarchical_eval.py \
+  --routers runs/lfm2.5-joint-residual-secondary-phase2-binary40-p6c6-512-wide-seed0.safetensors \
+  --lengths 512 --corpora wikitext2,pg19 --segments-per-corpus 1 \
+  --secondary-probes 6 --leaf-capacity 6 --storage-capacity 32 \
+  --fingerprint-bytes 5 --reranker joint-binary-attention \
+  --query-chunk 8 --key-chunk 256 --warmups 3 --repeats 5 \
+  --memory-limit-mb 1792 --cache-limit-mb 64 \
+  --output runs/lfm2.5-joint-residual-secondary-phase2-binary40-p6c6-512-wide-seed0-eval512.json
+```
+
+The checkpoint is a rejected seed-0 diagnostic. It reaches 72.00%/73.04%
+WikiText/PG-19 oracle-relative recall, 1.880%/1.245% eviction, and 2,832 bytes/query.
+The measured residual-index lookup is 765.8/802.1 us/query. Do not run a third phase,
+temperature sweep, output recovery, or seed replication.
+
+Primary-conditioned local biases are enabled instead with
+`--joint-address-primary-conditioned-secondary`. Use the same two-phase command and
+remine protocol. The selected router and its scorer-refreshed derivative are:
+
+```text
+runs/lfm2.5-joint-primary-conditioned-secondary-phase2-binary40-p6c6-512-wide-seed0.safetensors
+runs/lfm2.5-primary-conditioned-secondary-refreshed-binary40-p6c6-512-wide-seed0.safetensors
+```
+
+The phase-2 canonical result is 76.54%/78.93% WikiText/PG-19 oracle-relative recall.
+Its address and retained K=32 ceilings are 89.12%/93.14% and 84.37%/87.88%. The one
+allowed scorer refresh uses `--linear-only --steps 16000 --pairwise-weight 1
+--memory-limit-mb 1760 --cache-limit-mb 8`; it peaks at 1,764.7 MB and reaches only
+76.72%/79.09%. Do not use the earlier 64 MB-cache attempt: it crossed the safety cap
+at 1,795.9 MB, was interrupted, and wrote no checkpoint. Do not add another phase,
+refresh, or seed.
+
 Projected selected attention:
 
 ```bash

@@ -281,14 +281,211 @@ address agreement. Its overlap with the FP top 32 is only 2.10%, and index
 construction is still an offline rebuild rather than a causal
 append-only update.
 
-A matched retention sweep makes the next gate sharper. Capacity-64 tail retention
-reaches 92.19% recall at 309.9 us and 6 KiB/query. Capacity-32 reservoir is the best
-tested point under 3 KiB, at 85.94% and 299.9 us. Fingerprint subslots regress recall.
-The next systems gate is a hierarchical or adaptive crowded-bucket design that reaches
-at least 95% needle recall at 2M, at most 3 KiB/query, and at most 350 us/query.
-After that comes learned-address recall on model-derived queries, append-only decode
-integration, and correctness parity. Only then should the project fuse gather/attention
-in Metal or compare end-to-end execution against dense MLX attention.
+A sparse hierarchical index now clears that gate. It uses an 8-bit secondary address,
+four secondary probes, capacity-seven compact leaves, and a split start/count
+directory. At 2M it reaches 95.31% planted-needle recall at 2.78 KiB/query and
+294.4 us/query; conditional retention is 100% for address-matched queries. Peak MLX
+memory is 768 MB. Dense 2-bit and 4-bit hierarchical variants are retained as negative
+results because their eviction/address tradeoffs miss the recall target.
+
+The learned-address gate on real LFM2.5 layer-14 states now fails. Across three seeds
+on one shared WikiText held-out segment, the hierarchy recovers only 3.31–4.69% of
+distant attention mass and raises perplexity to 1.325–1.367× dense. A separate PG-19
+segment reproduces 4.36–8.11% distant-mass recall. An oracle at 1,024 tokens finds
+92.69% of distant mass inside the best 224 candidates, but only 55.49% survives the
+`K=32` ceiling and 28.31% survives learned-code Hamming reranking. Address discovery
+is the largest loss; reranking is independently misaligned, and retention eviction
+rises to 7.51% at 1,024.
+
+The attention-mass-aligned hierarchy now passes the 256-token routing gate across
+three seeds. On the identical held-out WikiText and PG-19 segments it reaches
+80.16–85.33% of the dense `K=32` distant-mass oracle at 2,808 bytes/query. Trained
+sparse output projections keep all six seed/corpus perplexity ratios at or below
+1.0318. The MLX reference remains above the 350-us target at 421–446 us/query.
+
+The next gate is length generalization, not another 256-token reranker sweep. At 512,
+oracle-relative routing falls to 73.15–76.72%; at 1,024 it falls to 61.37–64.82%.
+Output recovery restores all 512 perplexity ratios to at most 1.0318, but 1,024-token
+recovery training exceeded the 1,792 MB safety ceiling at 1,905 MB and was stopped.
+Append-only decode integration, Metal fusion, and end-to-end speed claims remain
+gated on long-context routing recall and a memory-safe 1,024 quality protocol.
+
+Seed-0 compressed-scoring follow-ups do not clear the 512-token gate. The strongest
+joint binary decoder reaches 78.15%/78.06% of the oracle on WikiText/PG-19; nonlinear,
+head-calibrated, normalized-head, and supervised four-byte VQ variants remain below
+78.3%. The 128-segment VQ run peaks at 1,778.9 MB. The next gate is therefore a
+48/64-candidate compressed shortlist followed by exact reranking with explicit exact-K
+traffic accounting. It is not valid to count only the 2,808 index bytes for that test.
+
+The shortlist sweep brackets the seed-0 boundary: 34 exact finalists remain below
+gate at 79.44%/79.51%, while 36 reach 80.40%/80.66%. The latter costs 39,672 total
+bytes/query (2,808 index plus 36 KiB exact K), so it is diagnostic rather than a
+fixed-envelope success. The next training milestone is compressed-only distillation
+of the exact swaps among approximate ranks 25–36, followed by the same 512-token
+WikiText/PG-19 gate before any additional seed or length expansion.
+
+That boundary-distillation attempt fails: its held-out objective improves, but the
+compressed selector reaches only 78.28%/77.30% at 512. The next step is therefore a
+fixed-byte allocation ceiling study, not another loss variant: 40/48-bit codes with
+candidate counts reduced to keep total traffic at 2,808 bytes, and no training unless
+the resulting retained pool has an at-least-80% exact-rerank ceiling.
+
+The fixed-byte study confirms adequate pool ceilings but no deployed pass. At 512,
+288 retained candidates contain 85.52%/87.21% of the WikiText/PG-19 oracle; 264 and
+240 candidates also remain above 80%. The best deployed point is 40-bit 6x6 routing
+at 2,832 bytes/query and 78.81%/79.62%. Binary 48-bit, categorical 40/56-bit,
+teacher-top-32, query-only, and joint query/key variants all miss on seed 0.
+
+The length-matched address stage has now been run on seed 0 and does not pass. Direct
+attention-mass training makes 97-99% of distant mass addressable but collapses joint
+codes into hot leaves. A new joint-address entropy loss at weights 10 and 30 exposes
+the tradeoff but does not beat the original 78.81%/79.62% router: its best deployed
+row is 77.47%/77.95%, with 45-54% eviction, while stronger entropy reduces eviction
+at the cost of address alignment. All rows preserve 2,832 bytes/query.
+
+The next gate is therefore capacity-aware optimization, not another scalar
+regularization sweep. Train directly against overflow in the deployed 6x6 leaves or
+learn bounded local retention, then repeat the identical seed-0 decomposition.
+Require both corpora to improve over the original router and reach at least 80% of
+the oracle before seeds 1/2, output recovery, latency work, or 1,024-token expansion.
+
+The capacity-aware branch is now implemented and bounded. A straight-through leaf
+overflow loss reduces eviction to 15.42%/14.48% at weight 0.3 and lifts WikiText to
+80.15% oracle-relative recall, but PG-19 reaches only 77.88%. Weight 0.1 reaches
+78.25%/78.57%. The both-corpus gate therefore remains closed despite a real load
+improvement. The next gate is learned attention-aware retention within crowded
+leaves; do not continue scalar overflow sweeps or replicate these seed-0 failures.
+
+Linear learned retention does not clear that gate. Global attention-salience training
+reaches 79.42%/79.20%, and an objective restricted to each hard leaf's capacity-32
+boundary reaches 79.24%/79.36%. Both preserve the original routing/scorer tensors and
+fixed traffic. Before implementing a larger retention model, measure the oracle
+future-attention retention ceiling on the same leaves. Continue only if that ceiling
+passes both corpora; otherwise return upstream to address/rerank representation.
+
+The future-attention oracle retention ceiling reaches 79.25% on WikiText and 80.47%
+on PG-19, so it does not pass both corpora and closes retention work for the current
+leaves. Interpolating original and capacity-aware address projections also fails:
+the best intermediate is only 79.45%/79.17%. The roadmap therefore returns upstream
+to domain-balanced discrete address/reranker training, with model selection performed
+on training/evaluation-domain segments before one canonical held-out gate check.
+
+That branch has now completed its bounded seed-0 checks. Group-DRO address training
+reaches 80.66%/77.99%, and refreshing its scorer reaches 80.21%/78.16%. A 24-mask
+whole-table mixture selected on reserved training-split segments reaches only
+78.78%/78.42% after canonical transfer. Evaluation-domain training on noncanonical
+segments reaches 79.07%/80.91%. Each result is WikiText/PG-19 oracle-relative recall
+at 512 tokens and 2,832 bytes/query; none passes both corpora.
+
+Do not replicate these seed-0 checkpoints, run output recovery for them, tune against
+canonical segment 0, or continue scalar Group-DRO/domain/table-mixture sweeps. The next
+implementation gate is a materially different discrete set objective: optimize the
+actual bounded candidate membership and compressed final ranking jointly across both
+training domains. First require one untouched seed-0 canonical pass at at least 80%
+on each corpus. Only then run output recovery, seeds 1/2, latency work, and 1,024-token
+expansion.
+
+The first candidate-set surrogate does not clear that implementation gate. It models
+all six secondary probes and expected capacity-32 reservoir survival, reduces its
+reserved loss from 0.274 to 0.166, and lowers canonical eviction. Nevertheless,
+canonical WikiText/PG-19 recall falls to 74.87%/75.29% because address-candidate mass
+falls to about 83.6%. The checkpoint is a rejected seed-0 diagnostic, not a candidate
+for scorer refresh or replication.
+
+The next objective must represent the exact causal retained membership and final
+top-32 boundary more faithfully than `min(1, capacity/load)`. Use training-domain
+segments for any model selection and preserve canonical segment 0 as a one-shot gate.
+Do not run a scalar candidate-set-weight sweep on the canonical results.
+
+Exact causal boundary mining is now implemented and also remains below gate. Without
+load control it collapses to 56-62% eviction. Coupled with the pre-existing overflow
+weight 0.3, it holds eviction to 13-15% and preserves retained-top32 ceilings of
+85.41%/86.94%, but deployed WikiText/PG-19 recall is only 77.48%/78.14%. A refreshed
+40-bit attention scorer reaches 77.47%/77.98%.
+
+Do not replicate or run output recovery for this seed-0 branch. The next architecture
+must jointly expose exact retained membership and final rank swaps during optimization;
+another sequential address phase, linear scorer refresh, boundary stride, or scalar
+weight sweep is not supported. Preserve the 2,848-byte envelope and canonical holdout.
+
+That joint architecture is now implemented in `mlx_joint_binary_attention_train.py`.
+It interleaves scorer updates with exact-boundary and overflow-aware address updates
+on the same examples, saves both components in one checkpoint, and supports an
+explicit pairwise top-32 rank-swap objective. Host backing keeps the accepted full
+run at 1,196.6 MB; a prior 1,810.5 MB attempt was interrupted before checkpoint save.
+
+The two-phase no-pairwise checkpoint reaches 78.45%/79.49% oracle-relative recall.
+The predeclared pairwise version improves its reserved scorer objective, but its
+single canonical evaluation reaches only 78.51%/79.61% on WikiText/PG-19, with
+14.82%/13.33% eviction, 1.169x/1.098x raw perplexity, 2,832 bytes/query, and about
+794 us/query. It therefore remains a rejected seed-0 diagnostic.
+
+Do not add a third phase, tune pairwise weights against canonical segment 0, run
+output recovery, or replicate this branch. The present formulation has now tested
+expected survival, exact causal boundary mining, sequential scorer refresh, and
+unified exact membership plus rank swaps without clearing the shared 512-token gate.
+The next milestone must change the representation or discrete optimizer rather than
+repeat these objectives; the goal remains at least 80% on both corpora before any
+quality recovery or seed expansion.
+
+Learned sign thresholds provide one bounded representation check and are also
+negative. `--joint-address-thresholds` freezes the address projections, learns only
+per-table query/key biases, persists them in the checkpoint, and applies them during
+both exact mining and deployment. The selected two-phase seed-0 checkpoint reaches
+78.31%/78.37% oracle-relative recall, versus 78.51%/79.61% for the zero-threshold
+pairwise checkpoint. Eviction changes to 14.45%/12.82%, but address-candidate mass
+falls to 87.47%/88.19%.
+
+Do not sweep threshold learning rates, phases, or the same overflow/boundary weights.
+The next implementation should replace correlated sign-bit byte construction with
+direct categorical address assignment or another genuinely discrete balanced
+partitioner, while keeping the same directory/probe/leaf byte accounting.
+
+That unconstrained categorical experiment is complete and negative. The new
+checkpoint format stores four assignment tensors for direct 256-way query/key byte
+prediction. Binary-derived initialization, categorical top-P probing, checkpoint
+reload, causal lookup, and the real timing path are covered by tests. The two-phase
+run stays at 2,832 bytes/query and peaks at 1,075.1 MB during training.
+
+Although phase-2 reserved address loss improves from 10.334 to 10.074, canonical
+WikiText/PG-19 oracle-relative recall collapses to 47.71%/48.93%. Address-candidate
+mass is only 34.94%/36.26%, while eviction falls to 0.366%/0.708%. This is strong
+evidence that globally balanced categorical partitions solve load by discarding the
+attention geometry the binary primary address had preserved.
+
+Do not tune the categorical temperature, learning rate, balance weights, or add a
+third phase. The next bounded implementation should freeze binary primary discovery
+and learn a separate categorical secondary code inside each primary region. It must
+first demonstrate a sufficient primary-only addressability ceiling and then improve
+reserved exact membership without changing the six-probe, six-posting, 2,832-byte
+contract.
+
+That residual-secondary milestone is complete and negative. The frozen primary pool
+has ample capacity: its exact K=32 ceiling is 99.42%/99.41% of oracle on canonical
+WikiText/PG-19. A shared learned 256-way secondary classifier per table reduces
+eviction to 1.880%/1.245%, but secondary K=32 ceilings fall to 81.17%/82.36%; after
+retention they are 78.16%/79.64%, and deployed recall is only 72.00%/73.04%.
+
+Do not add another phase, tune this branch against canonical segment 0, run output
+recovery, or replicate it. The next bounded representation should make the secondary
+partition explicitly conditional on the frozen primary region (for example, a
+low-rank or per-primary categorical bias) and train its compressed reranker against
+the same retained boundary. It must preserve six probes, six postings, and 2,832
+bytes/query, improve on training-domain reserved metrics, then clear 80% on both
+canonical corpora before any seed or length expansion.
+
+That primary-conditioned representation is also complete and negative. Per-primary
+query/key secondary biases raise the address K=32 ceilings to 89.12%/93.14% of oracle
+and retained ceilings to 84.37%/87.88%, but deployed recall is 76.54%/78.93%.
+A single safe 16,000-step scorer refresh reaches only 76.72%/79.09%. Address training
+peaks at 1,079.1 MB and the accepted refresh at 1,764.7 MB. A first refresh attempt
+exceeded the cap at 1,795.9 MB, was interrupted, and wrote no checkpoint.
+
+Do not tune the primary biases, add another remine phase, or try another fixed-pool
+linear scorer refresh. The next milestone must allocate the fixed 288 posting reads
+according to leaf pressure/relevance and align the compressed final scorer to that
+deployed allocation. Require reserved-domain improvement before a single seed-0
+canonical check; output recovery, seeds, 1,024 tokens, and Metal remain gated.
 
 The [indexed-memory article analysis](indexed-memory-article-analysis.md) adds two
 explicit gates before any end-to-end sub-quadratic claim: compare token routing with a

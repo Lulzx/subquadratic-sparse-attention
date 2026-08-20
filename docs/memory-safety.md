@@ -16,6 +16,7 @@ That run produced useful evidence—dense attention exhausted memory while the s
 | `mlx_attention_bench.py` | 16,384 tokens |
 | `validate_scaling.py` sparse / dense | 16,384 / 8,192 tokens |
 | `mlx_evaluate.py` | 4,096 tokens |
+| `mlx_lfm_hierarchical_eval.py` | 1,024 tokens |
 | LFM2.5 recovery/quality/behavior scripts | 1,792 MB MLX working-set limit |
 
 Larger requested lengths are skipped with an explicit message instead of being attempted.
@@ -61,6 +62,16 @@ one at a time for recall and timing. Run it separately from model
 evaluation. Its persistent address table is a benchmark prototype; the production
 prefill selector still uses the sort-built path. The matched retention runs peak at
 432 MB for capacity 16, 448 MB for capacity 32, and 480 MB for capacity 64.
+The sparse 8-bit hierarchical 256K–2M sweep peaks at 768 MB. Its largest fixed
+resident component is the split direct-address leaf directory; run this sweep alone
+and keep the 2M ceiling.
+
+The real-state hierarchical evaluator computes its dense teacher in streaming key
+chunks and never materializes a full global attention matrix. The 256-token three-seed
+runs peak at 837 MB; the sequential seed-0 512/1,024-token run peaks at 1,276 MB.
+Keep the 1,024-token ceiling on the reference laptop until a separately monitored
+probe establishes a safe larger bound. Run corpora and router checkpoints
+sequentially rather than as parallel processes.
 
 ## Recommended long-context settings
 
@@ -82,3 +93,12 @@ python3 mlx_evaluate.py checkpoint.safetensors \
 5. Never use dense 32K attention on this laptop.
 
 The command-line override is an escape hatch for different hardware, not a recommendation.
+
+### Hierarchical output recovery
+
+The accepted 256-token recovery runs peak at 1,047 MB. The three 512-token runs use
+24 training segments per corpus and peak at 1,396–1,397 MB. A reduced 1,024-token
+pilot with only eight training segments per corpus reached 1,905 MB despite the
+1,792 MB configured MLX limit and was interrupted at step 750. Do not rerun the
+current 1,024 recovery implementation. It needs streamed examples, activation
+recomputation, or a smaller trainable module before another attempt.

@@ -130,8 +130,11 @@ the bounded-address mechanism, but it is not wired into decoding. At 2M, fixed b
 capacity reduces needle recall to 53.12% and low FP-top32 overlap prevents a general
 selector-quality claim. A matched retention sweep raises recall to 92.19% with
 capacity 64 at 6 KiB/query; capacity-32 reservoir reaches 85.94% at 3 KiB/query.
-Neither meets the active target of at least 95% recall within 3 KiB and 350 us, so the
-next design problem is secondary addressing or adaptive storage inside crowded buckets.
+A sparse 8-bit secondary directory then reaches 95.31% at 2.78 KiB/query and
+294.4 us/query, satisfying the synthetic routing gate. It retains every planted target
+that has a valid hierarchical address in the 64-query 2M sample. Low FP-top32 overlap
+remains, so the next problem is model-derived routing quality and append-only decode,
+not another synthetic capacity increase.
 
 ### Benchmark routing can overfit
 

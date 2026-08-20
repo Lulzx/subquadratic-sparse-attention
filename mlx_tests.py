@@ -10,8 +10,26 @@ import mlx.optimizers as optim
 import numpy as np
 
 from mlx_train import curriculum_length, scaled_batch_size
-from mlx_donor_router import DonorHashRouter, hard_metrics
+from mlx_donor_router import DonorHashRouter, HierarchicalAttentionRouter, hard_metrics
 from mlx_lfm_replacement import GatedLFMReplacement
+from mlx_lfm_hierarchical_eval import (
+    categorical_address_codes,
+    exact_shortlist_rerank,
+    oracle_future_distant_salience,
+    primary_address_candidates,
+    primary_conditioned_categorical_address_codes,
+    router_codes,
+    secondary_probe_codes,
+    streaming_teacher_metrics,
+)
+from mlx_joint_binary_attention_train import (
+    CategoricalHierarchicalAddressRouter,
+    JointVQAttentionDecoder,
+    PrimaryConditionedResidualSecondaryRouter,
+    ResidualCategoricalSecondaryRouter,
+    ThresholdedHierarchicalAttentionRouter,
+)
+from mlx_address_table_mix import declared_masks, mixed_projection
 from mlx_lfm_retrieval_generalization import (
     TASK_VALUES,
     build_manifest,
@@ -23,10 +41,16 @@ from mlx_lfm_retrieval_router import TRAIN_VALUES
 from mlx_routing_scan_bench import (
     build_bucket_index,
     build_bucket_tails,
+    build_hierarchical_index,
+    build_sparse_hierarchical_index,
     candidate_recall,
     logical_history_bytes,
+    hierarchical_query_codes,
+    host_hierarchical_probe_codes,
     packed_codes,
     per_length_query_rng,
+    secondary_table_codes,
+    sparse_posting_pool,
 )
 from ssa.mlx_attention import random_weights, sparse_attention, sparse_attention_chunked
 from ssa.mlx_model import MLXSSAAttention, causal_slot_attention
@@ -416,6 +440,129 @@ def test_learned_router_diagnostics():
         == metrics["queries"]
     )
     assert metrics["distance"]["1-64"]["queries"] == metrics["queries"]
+    hierarchical_router = HierarchicalAttentionRouter(width=8, tables=2, bits=4)
+    hierarchical_loss, hierarchical_parts = hierarchical_router.hierarchical_loss(
+        x,
+        mx.array(teacher),
+        query_start,
+        window=2,
+        sink_tokens=1,
+        mass_cover=0.95,
+        mass_gamma=0.5,
+        max_positives=4,
+    )
+    mx.eval(hierarchical_loss, hierarchical_parts)
+    assert math.isfinite(float(hierarchical_loss))
+    assert len(hierarchical_parts) == 13
+    assert all(math.isfinite(float(part)) for part in hierarchical_parts)
+    assert 0.0 < float(hierarchical_parts[7]) <= 1.0
+    assert 0.0 <= float(hierarchical_parts[8]) <= 1.0
+    assert float(hierarchical_parts[9]) == 0.0
+    assert float(hierarchical_parts[10]) == 0.0
+    assert float(hierarchical_parts[11]) == 0.0
+    assert float(hierarchical_parts[12]) == 0.0
+    hierarchical_router.key_projection = mx.zeros_like(
+        hierarchical_router.key_projection
+    )
+    overflow_loss, overflow_parts = hierarchical_router.hierarchical_loss(
+        x,
+        mx.array(teacher),
+        query_start,
+        window=2,
+        sink_tokens=1,
+        mass_cover=0.95,
+        mass_gamma=0.5,
+        max_positives=4,
+        leaf_overflow_weight=1.0,
+        leaf_storage_capacity=1,
+    )
+    mx.eval(overflow_loss, overflow_parts)
+    assert math.isfinite(float(overflow_loss))
+    assert float(overflow_parts[9]) > 0.0
+    candidate_loss, candidate_parts = hierarchical_router.hierarchical_loss(
+        x,
+        mx.array(teacher),
+        query_start,
+        window=2,
+        sink_tokens=1,
+        mass_cover=0.95,
+        mass_gamma=0.5,
+        max_positives=4,
+        candidate_set_weight=1.0,
+        candidate_set_temperature=16.0,
+        candidate_set_query_stride=2,
+        secondary_probes=2,
+        retrieval_topk=4,
+        leaf_storage_capacity=1,
+    )
+    mx.eval(candidate_loss, candidate_parts)
+    assert math.isfinite(float(candidate_loss))
+    assert float(candidate_parts[10]) > 0.0
+    deployed_mask = mx.zeros_like(mx.array(teacher)).astype(mx.bool_)
+    boundary_loss, boundary_parts = hierarchical_router.hierarchical_loss(
+        x,
+        mx.array(teacher),
+        query_start,
+        window=2,
+        sink_tokens=1,
+        mass_cover=0.95,
+        mass_gamma=0.5,
+        max_positives=4,
+        retrieval_topk=4,
+        deployed_candidate_mask=deployed_mask,
+        exact_boundary_weight=1.0,
+        exact_boundary_negative_weight=1.0,
+    )
+    mx.eval(boundary_loss, boundary_parts)
+    assert math.isfinite(float(boundary_loss))
+    assert float(boundary_parts[11]) > 0.0
+    assert float(boundary_parts[12]) == 0.0
+    retention_loss, retention_parts = hierarchical_router.attention_retention_loss(
+        x,
+        mx.array(teacher),
+        retrieval_topk=4,
+        pairwise_weight=1.0,
+        pairwise_margin=1.0,
+        leaf_pairwise_weight=1.0,
+        leaf_storage_capacity=1,
+    )
+    mx.eval(retention_loss, retention_parts)
+    assert math.isfinite(float(retention_loss))
+    assert len(retention_parts) == 3
+    assert float(retention_parts[2]) > 0.0
+    rerank_loss, rerank_parts = hierarchical_router.attention_rerank_loss(
+        x, mx.array(teacher), query_start, window=2, sink_tokens=1,
+        retrieval_topk=4, hard_negatives=4,
+    )
+    mx.eval(rerank_loss, rerank_parts)
+    assert math.isfinite(float(rerank_loss))
+    assert len(rerank_parts) == 5
+    assert all(math.isfinite(float(part)) for part in rerank_parts)
+    pool_mask = mx.zeros_like(mx.array(teacher)).astype(mx.bool_)
+    pool_mask = pool_mask.at[..., :8].add(True)
+    pool_loss, pool_parts = hierarchical_router.attention_rerank_loss(
+        x, mx.array(teacher), query_start, window=2, sink_tokens=1,
+        retrieval_topk=4, hard_negatives=4, candidate_mask=pool_mask,
+        confidence_weighted=True, confidence_mix=0.75,
+    )
+    mx.eval(pool_loss, pool_parts)
+    assert math.isfinite(float(pool_loss))
+    assert all(math.isfinite(float(part)) for part in pool_parts)
+    for variant in (
+        {"bilinear": True, "confidence_weighted": True},
+        {"lookup": True},
+        {"decoder": True},
+        {"decoder": True, "distance_bias": True},
+        {"query_lookup": True},
+    ):
+        variant_loss, variant_parts = hierarchical_router.attention_rerank_loss(
+            x, mx.array(teacher), query_start, window=2, sink_tokens=1,
+            retrieval_topk=4, hard_negatives=4, candidate_mask=pool_mask,
+            **variant,
+        )
+        mx.eval(variant_loss, variant_parts)
+        assert math.isfinite(float(variant_loss))
+        assert all(math.isfinite(float(part)) for part in variant_parts)
     print("PASS learned-router agreement, occupancy, correlation, and distance diagnostics")
 
 
@@ -604,6 +751,18 @@ def test_routing_scan_benchmark():
     np.testing.assert_array_equal(
         full_sweep_targets[2_097_152], subset_targets,
     )
+    parity_rng = np.random.default_rng(19)
+    parity_vectors = parity_rng.standard_normal((3, 4), dtype=np.float32)
+    parity_projection = parity_rng.standard_normal((4, 64), dtype=np.float32)
+    host_primary, host_secondary = host_hierarchical_probe_codes(
+        parity_vectors, parity_projection, 4, 16, 2, 8, 4
+    )
+    mlx_primary, mlx_secondary = hierarchical_query_codes(
+        mx.array(parity_vectors), mx.array(parity_projection), 4, 16, 2, 8, 4
+    )
+    mx.eval(mlx_primary, mlx_secondary)
+    np.testing.assert_array_equal(np.array(mlx_primary), host_primary)
+    np.testing.assert_array_equal(np.array(mlx_secondary), host_secondary)
     codes = np.array([
         [1, 2],
         [1, 3],
@@ -631,6 +790,43 @@ def test_routing_scan_benchmark():
     )
     assert np.sum(fingerprint >= 0) == 2
     assert fingerprint_stats["eviction_count"] == 18
+    hierarchical_codes = np.array([
+        [1, 0],
+        [1, 1],
+        [1, 2],
+        [1, 3],
+    ], dtype=np.uint16)
+    secondary = secondary_table_codes(hierarchical_codes, secondary_bits=2)
+    np.testing.assert_array_equal(secondary[:, 0], np.arange(4, dtype=np.uint16))
+    leaves, leaf_stats = build_hierarchical_index(
+        hierarchical_codes, capacity=1, address_bits=4, secondary_bits=2,
+        retention_policy="reservoir",
+    )
+    assert leaves.shape == (2, 16, 4, 1)
+    assert set(leaves[0, 1, :, 0]) == {0, 1, 2, 3}
+    assert leaf_stats["max_primary_occupancy"] == 4
+    assert leaf_stats["max_occupancy"] == 1
+    starts_directory, counts_directory, postings, sparse_stats = (
+        build_sparse_hierarchical_index(
+        hierarchical_codes, capacity=1, address_bits=4, secondary_bits=2,
+        retention_policy="reservoir",
+        )
+    )
+    assert starts_directory.shape == counts_directory.shape == (2, 64)
+    assert len(postings) == 8
+    counts = counts_directory[0, 1 * 4 + np.arange(4)]
+    np.testing.assert_array_equal(counts, np.ones(4, dtype=np.uint8))
+    assert sparse_stats["eviction_count"] == 0
+    pool, valid = sparse_posting_pool(
+        mx.array([[[[0, 1]]]], dtype=mx.int32),
+        mx.array([0, 1], dtype=mx.int32),
+        mx.array([1, 0], dtype=mx.uint8),
+        mx.array([42], dtype=mx.int32),
+        capacity=2,
+    )
+    mx.eval(pool, valid)
+    np.testing.assert_array_equal(np.array(pool), [[[[[42, -1], [-1, -1]]]]])
+    np.testing.assert_array_equal(np.array(valid), [[[[[True, False], [False, False]]]]])
     assert candidate_recall(
         np.array([[1, 2], [3, -1]]),
         np.array([[1, 2], [3, 4]]),
@@ -641,6 +837,15 @@ def test_routing_scan_benchmark():
     assert long["fp_scan"] == 16 * short["fp_scan"]
     assert long["binary64_scan"] == 16 * short["binary64_scan"]
     assert long["bucket_lookup"] == short["bucket_lookup"] == 768
+    hierarchical_bytes = logical_history_bytes(
+        2_097_152, 64, 4, 8, probes=2, secondary_probes=4
+    )
+    assert hierarchical_bytes["bucket_lookup"] == 3072
+    sparse_bytes = logical_history_bytes(
+        2_097_152, 64, 4, 7, probes=2, secondary_probes=4,
+        directory_entry_bytes=5,
+    )
+    assert sparse_bytes["bucket_lookup"] == 2848
     vectors = np.eye(4, dtype=np.float32)
     projection = np.arange(4 * 64, dtype=np.float32).reshape(4, 64) - 100.0
     byte_codes, table_codes = packed_codes(vectors, projection, chunk_size=2)
@@ -651,6 +856,235 @@ def test_routing_scan_benchmark():
     )
     np.testing.assert_array_equal(table_codes, reconstructed)
     print("PASS routing-scan index, byte accounting, and recall metrics")
+
+
+def test_streaming_teacher_oracle_accounting():
+    length = 8
+    queries = np.zeros((1, length, 4), dtype=np.float32)
+    keys = np.zeros_like(queries)
+    full_candidates = np.full((length, length), -1, dtype=np.int32)
+    distant_candidates = np.full((length, length), -1, dtype=np.int32)
+    for position in range(length):
+        full_candidates[position, :position + 1] = np.arange(position + 1)
+        distant_count = max(position - 1, 0)
+        distant_candidates[position, :distant_count] = np.arange(distant_count)
+    query_bytes = np.zeros((length, 2), dtype=np.uint8)
+    key_bytes = np.zeros_like(query_bytes)
+    metrics = streaming_teacher_metrics(
+        queries, keys, full_candidates, distant_candidates,
+        scale=0.5, topk=1, window=1, sink_tokens=0,
+        query_chunk=2, key_chunk=3,
+        query_bytes=query_bytes, key_bytes=key_bytes, candidate_slots=2,
+    )
+    distant_counts = np.arange(1, length - 1, dtype=np.float64)
+    expected_candidate = np.mean(np.minimum(2, distant_counts) / distant_counts)
+    expected_top = np.mean(1.0 / distant_counts)
+    np.testing.assert_allclose(
+        metrics["oracle_candidate_distant_mass_recall"]["mean"],
+        expected_candidate,
+        rtol=1e-6,
+    )
+    np.testing.assert_allclose(
+        metrics["oracle_topk_distant_mass_recall"]["mean"],
+        expected_top,
+        rtol=1e-6,
+    )
+    np.testing.assert_allclose(
+        metrics["oracle_hamming_distant_mass_recall"]["mean"],
+        expected_top,
+        rtol=1e-6,
+    )
+    assert metrics["distant_attention_mass_recall"]["mean"] == 1.0
+    salience = oracle_future_distant_salience(
+        queries, keys, scale=0.5, window=1, sink_tokens=0, query_chunk=2
+    )
+    expected_salience = np.zeros(length, dtype=np.float32)
+    for position in range(2, length):
+        expected_salience[:position - 1] += 1.0 / (position - 1)
+    np.testing.assert_allclose(salience, expected_salience, rtol=1e-6)
+    print("PASS streaming teacher oracle traffic and K ceilings")
+
+
+def test_joint_vq_binary_initialization():
+    rng = np.random.default_rng(41)
+    hidden = mx.array(rng.normal(size=(9, 12)).astype(np.float32))
+    for bits in (32, 56):
+        key_projection = mx.array(
+            rng.normal(size=(12, bits)).astype(np.float32)
+        )
+        binary_decoder = mx.array(
+            rng.normal(size=(bits, 8)).astype(np.float32)
+        )
+        module = JointVQAttentionDecoder(
+            key_projection, binary_decoder, kv_heads=2, query_heads=2,
+            head_dim=4, temperature=0.5,
+        )
+        decoded, logits = module(hidden, kv_heads=2, head_dim=4)
+        binary = mx.where(hidden @ key_projection >= 0, 1.0, -1.0)
+        expected = (binary @ binary_decoder).reshape(9, 2, 4)
+        mx.eval(decoded, logits, expected)
+        np.testing.assert_allclose(
+            np.array(decoded), np.array(expected), atol=1e-5
+        )
+        tables = bits // 8
+        assert logits.shape == (9, tables, 256)
+        assert module.codebooks.shape == (tables, 256, 8)
+    print("PASS joint VQ exactly initializes from 32- and 56-bit decoders")
+
+
+def test_thresholded_hierarchical_addresses():
+    hidden = np.zeros((3, 4), dtype=np.float32)
+    projection = np.zeros((4, 64), dtype=np.float32)
+    bias = np.full((8, 8), -1.0, dtype=np.float32)
+    bias[0, 0] = 1.0
+    logits, codes, packed = router_codes(
+        hidden, projection, 8, 8, bias=bias
+    )
+    assert logits.shape == (3, 8, 8)
+    np.testing.assert_array_equal(codes[:, 0], np.ones(3, dtype=np.uint16))
+    np.testing.assert_array_equal(codes[:, 1:], np.zeros((3, 7), dtype=np.uint16))
+    np.testing.assert_array_equal(packed, codes.astype(np.uint8))
+
+    router = ThresholdedHierarchicalAttentionRouter(4, 8, 8, rerank_bytes=5)
+    router.query_projection = mx.zeros((4, 64))
+    router.key_projection = mx.zeros((4, 64))
+    router.address_query_bias = mx.array(bias)
+    router.address_key_bias = mx.array(-bias)
+    query_logits, key_logits = router.logits(mx.zeros((1, 3, 4)))
+    mx.eval(query_logits, key_logits)
+    np.testing.assert_array_equal(np.array(query_logits)[0], logits)
+    np.testing.assert_array_equal(np.array(key_logits)[0], -logits)
+    print("PASS learned address thresholds alter hard codes and remain asymmetric")
+
+
+def test_categorical_hierarchical_addresses():
+    rng = np.random.default_rng(43)
+    hidden = rng.normal(size=(11, 6)).astype(np.float32)
+    query_projection = rng.normal(size=(6, 64)).astype(np.float32)
+    key_projection = rng.normal(size=(6, 64)).astype(np.float32)
+    router = CategoricalHierarchicalAddressRouter(
+        mx.array(query_projection), mx.array(key_projection), temperature=1.0
+    )
+    mx.eval(router.parameters())
+    _, binary_query, _ = router_codes(hidden, query_projection, 8, 8)
+    categorical_logits, categorical_query, _ = categorical_address_codes(
+        hidden,
+        np.array(router.address_query_assignment_weight),
+        np.array(router.address_query_assignment_bias),
+    )
+    np.testing.assert_array_equal(categorical_query, binary_query)
+    probes = secondary_probe_codes(categorical_logits, table=0, probes=6)
+    expected = np.argsort(-categorical_logits[:, 1], axis=-1)[:, :6]
+    np.testing.assert_array_equal(probes, expected)
+    primary = primary_address_candidates(
+        categorical_query, categorical_query, window=1, sink_tokens=0
+    )
+    for position, row in enumerate(primary):
+        assert np.all(row[row >= 0] < position - 1)
+
+    x = mx.array(hidden[None])
+    query_start = 5
+    teacher = np.zeros((1, len(hidden) - query_start, len(hidden)), np.float32)
+    for offset, position in enumerate(range(query_start, len(hidden))):
+        eligible = max(position - 1, 1)
+        teacher[0, offset, :eligible] = 1.0 / eligible
+    loss, parts = router.hierarchical_loss(
+        x, mx.array(teacher), query_start, window=1, sink_tokens=0,
+        balance_weight=1.0, leaf_overflow_weight=0.1,
+        leaf_storage_capacity=4,
+    )
+    mx.eval(loss, parts)
+    assert math.isfinite(float(loss))
+    assert len(parts) == 13
+
+    residual = ResidualCategoricalSecondaryRouter(
+        mx.array(query_projection), mx.array(key_projection), temperature=1.0
+    )
+    mx.eval(residual.parameters())
+    residual_logits = np.einsum(
+        "nd,dtc->ntc", hidden,
+        np.array(residual.secondary_query_assignment_weight), optimize=False,
+    ) + np.array(residual.secondary_query_assignment_bias)
+    residual_codes = np.argmax(residual_logits, axis=-1)
+    np.testing.assert_array_equal(residual_codes, np.roll(binary_query, -1, axis=1))
+    residual_loss, residual_parts = residual.hierarchical_loss(
+        x, mx.array(teacher), query_start, window=1, sink_tokens=0,
+        leaf_overflow_weight=0.1, leaf_storage_capacity=4,
+    )
+    mx.eval(residual_loss, residual_parts)
+    assert math.isfinite(float(residual_loss))
+    assert len(residual_parts) == 13
+
+    conditioned = PrimaryConditionedResidualSecondaryRouter(
+        mx.array(query_projection), mx.array(key_projection), temperature=1.0
+    )
+    mx.eval(conditioned.parameters())
+    conditioned_logits, conditioned_codes, _ = (
+        primary_conditioned_categorical_address_codes(
+            hidden,
+            np.array(conditioned.secondary_query_assignment_weight),
+            np.array(conditioned.secondary_query_assignment_bias),
+            query_projection,
+            np.array(conditioned.secondary_query_primary_bias),
+        )
+    )
+    np.testing.assert_array_equal(conditioned_codes, residual_codes)
+    modified_bias = np.array(conditioned.secondary_query_primary_bias)
+    primary_code = int(binary_query[0, 0])
+    modified_bias[0, primary_code, 7] = 1e4
+    _, modified_codes, _ = primary_conditioned_categorical_address_codes(
+        hidden,
+        np.array(conditioned.secondary_query_assignment_weight),
+        np.array(conditioned.secondary_query_assignment_bias),
+        query_projection, modified_bias,
+    )
+    assert np.all(modified_codes[binary_query[:, 0] == primary_code, 0] == 7)
+    conditioned_loss, conditioned_parts = conditioned.hierarchical_loss(
+        x, mx.array(teacher), query_start, window=1, sink_tokens=0,
+        leaf_overflow_weight=0.1, leaf_storage_capacity=4,
+    )
+    mx.eval(conditioned_loss, conditioned_parts)
+    assert math.isfinite(float(conditioned_loss))
+    assert len(conditioned_parts) == 13
+    assert conditioned_logits.shape == (len(hidden), 8, 256)
+    print("PASS categorical bytes reproduce binary initialization and top-P probes")
+
+
+def test_whole_table_address_mix():
+    masks = declared_masks(8)
+    assert len(masks) == len(set(masks.values()))
+    assert 0 in masks.values() and 255 in masks.values()
+    original = np.arange(2 * 8 * 8, dtype=np.float32).reshape(2, 64)
+    groupdro = original + 1000.0
+    mixed = mixed_projection(
+        original, groupdro, 0b00000101, 8, 8
+    ).reshape(2, 8, 8)
+    original_tables = original.reshape(2, 8, 8)
+    groupdro_tables = groupdro.reshape(2, 8, 8)
+    np.testing.assert_array_equal(mixed[:, 0], groupdro_tables[:, 0])
+    np.testing.assert_array_equal(mixed[:, 2], groupdro_tables[:, 2])
+    np.testing.assert_array_equal(mixed[:, 1], original_tables[:, 1])
+    print("PASS whole-table address mixing")
+
+
+def test_exact_shortlist_rerank():
+    retained = np.full((4, 3), -1, dtype=np.int32)
+    retained[3] = [0, 1, 2]
+    queries = np.zeros((4, 1, 2), dtype=np.float32)
+    queries[3, 0, 0] = 1.0
+    approximate_keys = np.zeros((4, 1, 2), dtype=np.float32)
+    approximate_keys[:3, 0, 0] = [3.0, 2.0, 1.0]
+    exact_keys = np.zeros_like(approximate_keys)
+    exact_keys[:3, 0, 0] = [1.0, 3.0, 4.0]
+    distant, full, metrics = exact_shortlist_rerank(
+        retained, queries, approximate_keys, queries, exact_keys,
+        scale=1.0, shortlist_size=2, k=1, window=1, sink_tokens=0,
+    )
+    assert distant[3, 0] == 1
+    assert 1 in full[3] and 3 in full[3]
+    assert metrics["shortlist_size"] == 2
+    assert metrics["scored_queries"] == 1
+    print("PASS bounded exact shortlist reranks only approximate finalists")
 
 
 if __name__ == "__main__":
@@ -671,3 +1105,9 @@ if __name__ == "__main__":
     test_retrieval_generalization_manifest()
     test_retrieval_generalization_report()
     test_routing_scan_benchmark()
+    test_streaming_teacher_oracle_accounting()
+    test_joint_vq_binary_initialization()
+    test_thresholded_hierarchical_addresses()
+    test_categorical_hierarchical_addresses()
+    test_whole_table_address_mix()
+    test_exact_shortlist_rerank()

@@ -110,13 +110,17 @@ performance, or an end-to-end model speedup.
 ![Routing-only scaling and recall](docs/assets/routing-scan-scaling.svg)
 
 A matched retention ablation confirms that bucket storage, rather than address
-agreement, is the immediate scaling limit. At 2M, capacity-64 tail retention reaches
-92.19% needle recall at 309.9 us and 6 KiB/query. The best tested point at the proposed
-3 KiB ceiling is capacity-32 reservoir retention: 85.94% at 299.9 us. A fingerprint-
-subslot policy performs worse. The target of at least 95% recall, at most 3 KiB/query,
-and at most 350 us/query therefore remains open.
+agreement, is the immediate scaling limit. Flat capacity-64 reaches 92.19% needle
+recall but reads 6 KiB/query. A sparse hierarchical follow-up splits each primary
+bucket with an 8-bit secondary address and stores compact capacity-7 leaves. At 2M it
+reaches **95.31% needle recall at 294.4 us/query and 2.78 KiB/query**, satisfying the
+predeclared 95% / 3 KiB / 350 us gate. Retention conditional on a valid hierarchical
+address is 100% for the 64 planted queries; FP-top32 overlap remains only 3.12%, so
+this is not yet a general attention-quality result.
 
 ![Bucket-retention recall/traffic tradeoff](docs/assets/bucket-retention-tradeoff.svg)
+
+![Sparse hierarchical routing frontier](docs/assets/hierarchical-routing-frontier.svg)
 
 The active donor pair is now current-generation Liquid AI: the causal
 [LFM2.5-350M](https://huggingface.co/LiquidAI/LFM2.5-350M) supplies language-model
@@ -131,6 +135,85 @@ times value norm and trains hard Hamming matches with each table responsible for
 of the top 32 targets. Across three seeds, retained teacher contribution rises from
 23.41% to 30.97% and hard top-1 recall from 28.27% to 37.40%, while collision
 inflation falls from 17.22× to 13.39× the balanced 8-bit baseline.
+
+The first causal integration of those learned addresses into the sparse hierarchy is
+a negative model-quality result. On the same held-out 256-token WikiText segment,
+three seeds recover only **3.31–4.69% of distant attention mass** and raise perplexity
+to **1.325–1.367×** the dense layer-14 baseline. A separate PG-19 validation segment
+recovers 4.36–8.11%. Total attention-mass recall remains 86–89% because the fixed
+local window dominates it, so distant attention-mass recall is the primary gate.
+An oracle shows that the 224-candidate traffic budget is not the immediate ceiling:
+at 1,024 tokens its best candidates contain 92.69% of distant mass, but the final
+`K=32` ceiling is 55.49% and learned-code Hamming reranking retains only 28.31%.
+The attention-mass-aligned follow-up clears its declared **256-token** quality gate.
+With adaptive capacity-32 storage, a fixed 336-posting read budget, and four-byte
+fingerprints, all three seeds recover at least 80% of the dense `K=32` distant-mass
+oracle on both corpora (80.16–85.33%). Logical traffic is 2,808 bytes/query. Sparse
+output recovery keeps held-out perplexity within 3.18% of dense for every seed and
+corpus. The Python/MLX reference takes 421–446 us/query, so it does not meet the
+350-us target.
+
+The same routers do **not** preserve that routing gate at longer lengths. Oracle-
+relative distant-mass recall falls to 73.15–76.72% at 512 and 61.37–64.82% at 1,024,
+even though address-candidate mass remains high. Output recovery restores 512-token
+perplexity to within 3.18% across all seeds, but a conservatively reduced 1,024-token
+recovery run reached 1,905 MB and was stopped above the 1,792 MB operating limit.
+This is a bounded 256-token routing result plus a documented scaling failure, not a
+general long-context attention replacement. Metal fusion remains deferred.
+
+A seed-0 512-token follow-up retrains addresses directly on distant attention mass.
+It makes 97-99% of teacher mass addressable, but hot-leaf collapse causes 46-54%
+posting eviction under the fixed budget. Direct joint-code entropy regularization
+does not resolve the tradeoff: the best tested row reaches only 77.47%/77.95% of the
+WikiText/PG-19 `K=32` oracle, below the original 78.81%/79.62% scorer. The next gate
+is a capacity-aware objective or learned bounded retention, not more scalar balance
+tuning.
+
+A direct deployed-leaf overflow loss then cuts eviction to roughly 15% and lifts
+WikiText to 80.15% of its oracle, but PG-19 reaches only 77.88%. This corpus split
+rejects further scalar address-spreading sweeps: the next milestone is learned,
+attention-aware retention inside crowded leaves. No 512-token router is promoted as
+a cross-domain pass.
+
+A linear attention-salience retention score and a stricter loss trained only at each
+leaf's capacity boundary also remain below gate (best 79.42%/79.20% across the two
+corpora). The next check is an explicitly noncausal oracle retention ceiling before
+investing in a richer retention model.
+
+That future-attention oracle reaches 79.25%/80.47%, failing the both-corpus gate, and
+original/capacity-aware address interpolation also remains below 80% on at least one
+corpus. Retention and checkpoint blending are therefore closed; the next work returns
+to domain-balanced discrete address/reranker training selected away from the canonical
+held-out gate.
+
+That domain-balanced branch is also now bounded on seed 0. Group-DRO address training
+reaches 80.66%/77.99% oracle-relative recall on canonical WikiText/PG-19, and refreshing
+the compressed scorer reaches 80.21%/78.16%. A whole-table mixture selected only on
+reserved training-domain segments appears strong there but transfers at just
+78.78%/78.42%. Finally, training on noncanonical evaluation-domain segments reverses
+the corpus imbalance rather than solving it: 79.07%/80.91%, 2,832 bytes/query, and
+802-814 us/query. None passes both corpora, so output recovery, seed replication,
+latency work, and 1,024-token expansion remain closed. The next router must optimize
+the deployed discrete candidate set and scorer jointly across domains; another corpus
+weight, projection blend, or table-selection sweep is not justified by these results.
+
+A first candidate-set-level surrogate is implemented and rejected. It prices each
+teacher top-32 key by its primary-plus-six-secondary-probe path probability and the
+expected capacity-32 reservoir survival of its leaf. Reserved surrogate loss falls
+from 0.274 to 0.166, and canonical eviction improves to 14.77%/11.25%, but address
+mass collapses to 83.59%/83.76% and deployed recall to 74.87%/75.29%. Expected
+survival is therefore not an adequate substitute for the exact causal shortlist.
+Do not tune this loss weight on canonical segment 0; the next objective must expose
+the hard deployed membership/ranking boundary more faithfully.
+
+An exact retained-set boundary miner is now implemented with bit-packed causal masks.
+It pulls actual teacher-top32 misses toward their nearest complete path and pushes
+actual low-mass retained occupants off exact matched paths. Without overflow control
+it collapses into hot leaves (56-62% eviction and 76.15%/77.48% recall). Coupling the
+predeclared overflow-0.3 loss avoids collapse and leaves an 85.41%/86.94% retained
+pool ceiling, but deployed recall is only 77.48%/78.14%. Refreshing the 40-bit learned
+attention scorer changes that to 77.47%/77.98%. Exact hard mining therefore improves
+failure attribution but does not clear the fixed-envelope seed-0 gate.
 
 ## Architecture
 
@@ -307,6 +390,22 @@ All benchmark commands have conservative default context limits. The unified
 validation command writes JSON and Markdown reports under `runs/` and includes a
 safely capped dense reference plus a controlled collision-capacity sweep. See
 [memory safety](docs/memory-safety.md) before overriding the limits.
+
+The strongest latest 512-token real-state checkpoint jointly trains exact retained
+membership and compressed rank swaps under the fixed 2,832-byte routing envelope. It
+remains a seed-0 negative: the one-shot WikiText/PG-19 canonical check reaches
+78.51%/79.61% of the dense K=32 distant-attention-mass oracle, with about 13-15%
+posting eviction and roughly 794 us/query in the MLX reference. A learned-threshold
+address variant regresses to 78.31%/78.37%. Neither is eligible for output recovery
+or seed replication. Direct categorical bytes almost eliminate eviction but collapse
+oracle-relative recall to 47.71%/48.93%, showing that global load balance can destroy
+attention-aligned colocation. Freezing the binary primary address confirms that its
+K=32 ceiling is still 99.42%/99.41% of oracle. A learned residual categorical
+secondary split reduces eviction to 1.88%/1.25%, but reaches only 72.00%/73.04%
+deployed oracle-relative recall because secondary discovery, retention, and reranking
+each lose mass. Conditioning that split on the primary region raises its pre-retention
+K=32 ceiling to 89.12%/93.14%, but its best scorer reaches only 76.72%/79.09% after
+retention. See the experiment ledger for the full decomposition.
 
 ## Documentation
 

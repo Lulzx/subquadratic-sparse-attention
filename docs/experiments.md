@@ -750,8 +750,449 @@ traffic, yet remains 9.06 points short of the target. Fingerprint subslots are a
 negative result: at 2M they reach only 50.00% at capacity 16 and 67.19% at capacity
 32 because collisions leave effective capacity unused.
 
-The next systems gate is therefore a hierarchical or adaptive local posting index:
-use secondary addressing or conditional probes only for crowded buckets, then test
-the explicit target of at least 95% needle recall, at most 3 KiB/query, and at most
-350 us/query. After that, run the same benchmark with model-derived addresses and
-targets, report recall/traffic together, and integrate an append-only causal index.
+### Sparse hierarchical secondary addressing
+
+The implemented follow-up uses an 8-bit secondary address from the next independent
+table, four secondary probes, and capacity seven per leaf. A direct-address directory
+stores 32-bit posting starts and 8-bit counts; retained positions live in one compact
+posting array. Each query reads 32 directory entries and at most 224 postings and
+fingerprints, for 2,848 logical bytes. The directory read is included in that total.
+
+| Context | Routing | Bytes/query | Needle recall | Address agreement | Recall given address | Leaf p99 | Evicted | Resident index |
+|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| 256K | 295.0 us | 2.78 KiB | 98.44% | 98.44% | 100.00% | 2 | 0.000% | 324 MiB |
+| 1M | 299.3 us | 2.78 KiB | 93.75% | 93.75% | 100.00% | 3 | 0.017% | 336 MiB |
+| 2M | **294.4 us** | **2.78 KiB** | **95.31%** | 95.31% | **100.00%** | 4 | 0.148% | 352 MiB |
+
+![Sparse hierarchical routing frontier](assets/hierarchical-routing-frontier.svg)
+
+The 2M row meets the predeclared gate of at least 95% needle recall, at most
+3 KiB/query, and at most 350 us/query. Two rejected designs preserve the mechanism
+boundary: a dense 2-bit hierarchy reaches 85.94% at 2.81 KiB and 320.5 us because
+34.39% of postings are evicted; a dense 4-bit hierarchy reaches 90.62% at 3 KiB and
+327.1 us, with 11.09% eviction and only 95.31% address agreement. The sparse 8-bit
+directory reduces eviction to 0.148% and retains every address-matched planted needle.
+
+The 1M sample is lower than the 2M sample because each length has an independent,
+seed-stable set of 64 queries; this is not a monotonic quality claim. FP-top32 recall
+is still only 3.12% at 2M. The next gate is model-derived addresses and attention
+targets, followed by an append-only causal update path. These synthetic results must
+not be presented as model-quality or end-to-end decode evidence.
+
+### Real-state hierarchical integration: failed quality gate
+
+`mlx_lfm_hierarchical_eval.py` captures normalized, RoPE-applied Q/K/V states from
+LFM2.5-350M layer 14 and evaluates the learned eight-table routers causally. The dense
+teacher is computed in two streaming passes, so no full global attention matrix is
+materialized. The sparse layer performs exact softmax only over four sink tokens, a
+32-token local window, and at most 32 routed distant tokens. Dense and sparse runs
+then share the unchanged remainder of the model for paired next-token loss.
+
+All three checkpoints were tested on exactly the same held-out 256-token segment:
+
+| Corpus | Seeds | Total mass recall | Distant mass recall | Perplexity ratio | Routing | Evicted postings |
+|---|---:|---:|---:|---:|---:|---:|
+| WikiText-2 test | 3 | 86.19–86.52% | **3.31–4.69%** | **1.325–1.367×** | 339–371 us | 0.049–1.074% |
+| PG-19 validation | 3 | 88.86–89.42% | **4.36–8.11%** | **1.064–1.133×** | 379–399 us | 0.244–0.684% |
+
+These are one-segment diagnostics, not corpus-level quality estimates. Nevertheless,
+the consistent seed and corpus failure rejects probe tuning as the next move. Total
+mass recall is misleading here: local and sink tokens dominate it while the router
+misses almost all attention outside the local window.
+
+A teacher-informed oracle separates three ceilings. It first takes the highest-mass
+224 distant keys, matching the hierarchy's maximum posting reads; this is a theoretical
+traffic-budget upper bound, not a realizable index. It then either selects the best
+32 by teacher mass or the nearest 32 by the learned 64-bit Hamming code:
+
+| WikiText length | Real routed distant mass | Best 224 candidates | Best 32 | Hamming 32 from oracle pool | Perplexity ratio | Causal eviction |
+|---:|---:|---:|---:|---:|---:|---:|
+| 256 | 4.61% | 100.00% | 78.51% | 54.61% | 1.367× | 0.342% |
+| 512 | 6.95% | 98.28% | 65.74% | 39.03% | 1.549× | 5.884% |
+| 1,024 | 5.46% | 92.69% | 55.49% | 28.31% | 3.080× | 7.507% |
+
+The 512- and 1,024-token rows use seed 0 only. At 256, 224 slots nearly cover the
+entire eligible distant history, so that row is mainly a sanity check. At 1,024, the
+fixed traffic budget can still contain most distant mass, while the `K=32` output
+budget and Hamming geometry each cause substantial loss. Actual routing is much worse
+again, identifying address discovery as the largest failure. Rising eviction at the
+longer lengths means retention is secondary, not universally solved.
+
+### Attention-mass-aligned hierarchy: 256 pass, longer-length failure
+
+The follow-up trains the adjacent primary/secondary paths against dense distant
+attention mass, freezes address projections for deployed-pool reranking, stores up to
+32 postings per leaf, and adaptively water-fills at most 336 posting reads per query.
+Four-byte fingerprints and directory reads give 2,808 logical bytes/query. Seeds 0
+and 2 use confidence-weighted Hamming reranking. Seed 1 required a query-conditioned
+32-dimensional decoder trained on 512 PG-19 train segments; the first 128-segment
+version remained below the PG-19 gate.
+
+| Length | Corpus | Seeds | Distant mass | Relative to dense K=32 oracle | Routing | Bytes/query |
+|---:|---|---:|---:|---:|---:|---:|
+| 256 | WikiText-2 test | 3 | 63.61–66.99% | **81.02–85.33%** | 431–445 us | 2,808 |
+| 256 | PG-19 validation | 3 | 58.78–59.15% | **80.16–80.66%** | 421–446 us | 2,808 |
+| 512 | WikiText-2 test | 3 | 48.09–50.44% | **73.15–76.72%** | 612–681 us | 2,808 |
+| 512 | PG-19 validation | 3 | 45.37–46.24% | **73.19–74.60%** | 620–695 us | 2,808 |
+| 1,024 | WikiText-2 test | 3 | 35.11–35.96% | **63.28–64.82%** | 439–450 us | 2,808 |
+| 1,024 | PG-19 validation | 3 | 30.95–31.47% | **61.37–62.42%** | 435–452 us | 2,808 |
+
+Thus the predeclared 80%-of-oracle routing gate passes across all three seeds only at
+256. The MLX implementation also misses the 350-us latency target at every real-state
+length. The non-monotonic timing is an implementation measurement, not an asymptotic
+claim; posting reads remain fixed while host/reference overhead varies.
+
+Frozen-router sparse-output recovery gives a different result. It trains only a copy
+of layer 14's attention projections against the dense attention output:
+
+| Length | Seed/corpus evaluations | Held-out perplexity ratio | Attention-output NRMSE | Peak MLX memory |
+|---:|---:|---:|---:|---:|
+| 256 | 6 | 1.0000–1.0318 | 0.0985–0.1180 | 1,047 MB |
+| 512 | 6 | 1.0000–1.0318 | 0.1624–0.1907 | 1,396–1,397 MB |
+
+This establishes downstream compensation at 512 despite the routing-recall miss; it
+does not turn the selector result into an 80%-of-oracle pass. A reduced 1,024-token
+recovery pilot reached 1,905 MB and was interrupted above the repository's 1,792 MB
+limit, so 1,024 perplexity recovery is unverified.
+
+Rejected rerank interventions are retained in `runs/`: product quantization, global
+bit weights, a 32x32 bilinear code interaction, byte-pair lookup tables, 32- and
+128-dimensional additive decoders, learned log-distance bias, exact-Q plus decoded-K
+reconstruction, direct attention-mass key decoding, a full query-conditioned byte
+lookup, and a 64-bit/216-candidate traffic trade. Exact Q/K reranking inside the
+retained seed-0 pool reaches 85.61–87.34% of the oracle at 512, proving that the pool
+has sufficient headroom, but no compressed learned reranker tested here realizes it.
+The next scientific problem is a position- and head-aware compressed scoring function
+that generalizes with length. Kernel work remains deferred.
+
+A subsequent seed-0 scorer study keeps the same 2,808-byte hierarchy and held-out
+segments. Joint 32-bit code/key decoding reaches 78.15%/78.06% of the oracle at 512
+on WikiText/PG-19, improving the earlier selector but missing the 80% gate. Nonlinear
+key decoding, pairwise ranking, query-conditioned head calibration, per-head
+normalization across the bounded pool, and normalized-objective retraining all remain
+between 77.59% and 78.08%. A supervised four-byte categorical VQ also fails: the
+32-segment run reaches 77.73%/78.07%, while a 128-segment run reaches
+77.96%/78.26%. The latter peaks at 1,778.9 MB and therefore cannot be scaled further
+under the 1,792 MB protocol. These are single-seed negative results; they were not
+replicated after missing the predeclared gate.
+
+The next diagnostic is a bounded two-stage selector: compressed shortlist sizes 48
+and 64 followed by exact-Q/K reranking. It must report index bytes separately from
+the additional gathered exact-key bytes, rather than treating the latter as free.
+
+That diagnostic finds a sharp seed-0 boundary at 512 tokens:
+
+| Exact shortlist | WikiText oracle-relative | PG-19 oracle-relative | Total bytes/query |
+|---:|---:|---:|---:|
+| 34 | 79.44% | 79.51% | 37,624 |
+| 36 | **80.40%** | **80.66%** | 39,672 |
+| 40 | 81.84% | 82.21% | 43,768 |
+| 48 | 83.60% | 84.38% | 51,960 |
+| 64 | 85.17% | 86.31% | 68,344 |
+
+The byte totals include the 2,808-byte index and FP16 exact-K reads (1,024 bytes per
+shortlisted token). The host-only approximate-plus-exact scoring loop is about
+87–104 us/query, but excludes index lookup and KV gather and is not an end-to-end
+latency claim. Top 36 clears the quality threshold by adding only four finalists, but
+its 39,672-byte traffic is 14.1x the fixed index budget. The next compressed-only
+experiment should distill these rank-25-to-36 boundary swaps; exact refinement itself
+is not a fixed-envelope pass.
+
+A targeted 128-segment boundary-distillation run then restricts training to the
+scorer's current top 36, asking the dense teacher which 32 should survive. Held-out
+boundary cross-entropy improves from 3.3960 to 3.3799, but deployed four-byte routing
+falls to 78.28%/77.30% at 512. Peak MLX memory is 1,778.88 MB. This rejects further
+loss tuning on the same representation. The next experiment should sweep 40- and
+48-bit codes with fewer postings under the same 2,808-byte total, measuring oracle
+pool ceilings before committing to training.
+
+That allocation study preserves the broader 2,848-byte routing envelope and tests
+seed 0 on the same 512-token held-out segments. Reducing candidate count does not
+remove the theoretical headroom:
+
+| Retained candidates | Exact retained-pool ceiling, WikiText | PG-19 |
+|---:|---:|---:|
+| 288 | 85.52% | 87.21% |
+| 264 | 84.41% | 86.19% |
+| 240 | 83.23% | 85.01% |
+
+The best deployed allocation is a 40-bit code with six secondary probes and six
+postings per probed leaf. It reads 2,832 logical bytes/query and reaches
+78.81%/79.62% of the dense `K=32` oracle on WikiText/PG-19. Redistributing the same
+budget from 2x18 through 6x6 helps, but 7x5 regresses. A 48-bit binary code reaches
+77.97%/78.62%; five-byte categorical VQ reaches 79.13%/79.07%; and a seven-byte VQ
+with 240 candidates reaches 77.74%/77.86%. Thus wider or categorical stored codes do
+not realize their oracle pool ceilings.
+
+Objective and query-side follow-ups also fail. A teacher-top-32 listwise target
+reaches 78.48%/79.50%. Query-only adaptation at learning rates `1e-5` and `1e-4`
+tops out at 78.90%/79.70%; jointly adapting query and compressed key maps reaches
+78.53%/79.64%. These are single-seed negatives and were not promoted to seed
+replication. The canonical MLX reference remains above the latency target, and raw
+paired perplexity remains above 1.05x. The next gate returns upstream to address
+learning at length 512: the current address projections were trained at 256 tokens
+with only eight segments per corpus and 200 steps. Scorer and kernel tuning remain
+deferred until that address stage improves both retained-pool and deployed recall.
+
+That length-matched address stage also fails on seed 0. Training on 128 WikiText and
+128 PG-19 segments for 4,000 steps makes nearly all distant teacher mass addressable,
+but the learned joint codes collapse into hot leaves. The unregularized run reaches
+99.95%/99.45% address-candidate mass while evicting 67.8%/66.3% of postings. Strong
+generic bit balance and decorrelation reduce eviction but erase too much useful
+address alignment.
+
+A direct differentiable joint-address entropy penalty makes the tradeoff explicit.
+At weight 10, WikiText/PG-19 address-candidate mass is 98.65%/97.47%, eviction is
+53.67%/45.57%, and deployed recall is only 77.47%/77.95% of the `K=32` oracle. At
+weight 30, eviction improves to 38.78%/25.65%, but address-candidate mass falls to
+92.61%/92.83% and deployed recall to 74.20%/77.53%. Both use 2,832 bytes/query;
+raw perplexity ratios are 1.133-1.206x and canonical routing is 786-795 us/query.
+Neither beats the original 78.81%/79.62% router. This rejects further scalar
+entropy/balance tuning: the next experiment must train against deployed leaf
+overflow or learn a bounded local retention policy.
+
+The deployed-overflow objective is differentiable through exact hard leaf matches
+and directly reduces the failure it targets. At weight 0.3, routing eviction falls
+to 15.42%/14.48% on WikiText/PG-19, compared with 31.43%/22.68% at weight 0.1.
+WikiText consequently reaches 80.15% of the `K=32` oracle, the first 512-token
+address-retraining row to cross the routing gate. PG-19 falls to 77.88%, however,
+because address-candidate mass declines to 88.72%. The lighter weight reaches only
+78.25%/78.57%. Raw perplexity is still 1.133-1.245x and routing is 807-810 us/query.
+
+The capacity-aware loss therefore controls deployed load but does not produce a
+cross-domain pass. More scalar overflow weights are deferred. The next experiment
+must rank which postings survive inside crowded leaves using attention-aligned
+retention scores, rather than continuing to spread all keys globally.
+
+The first learned retention projection preserves the original address and scorer
+tensors and ranks postings by a linear key-state salience score. Its held-out loss
+improves from 7.69 to 6.74, but canonical routing reaches only 79.42%/79.20% of the
+WikiText/PG-19 oracle. A leaf-conditioned objective then trains only across the
+capacity-32 keep/evict boundary; its held-out boundary loss falls from 1.304 to
+0.501, yet routing reaches only 79.24%/79.36%. Traffic remains 2,832 bytes/query,
+runtime 781-792 us/query, and raw perplexity 1.133-1.206x.
+
+These results reject further tuning of one global linear score per key. The next
+diagnostic is a noncausal oracle leaf-retention ceiling using true future distant
+attention salience. It must be labeled as a ceiling, not a deployable result. Only
+if it clears 80% on both corpora is a richer query/leaf-conditioned retention model
+justified.
+
+That oracle is now measured. It uses true future distant-attention salience to retain
+postings and is explicitly noncausal. It reaches 79.25% of the WikiText oracle and
+80.47% of the PG-19 oracle. Lookup timing is only a reservoir-equivalent proxy and
+excludes computation of future scores. Since the oracle itself misses WikiText,
+retention work stops on these frozen leaves.
+
+Linear interpolation between the original addresses and the overflow-0.3 addresses
+does not recover a shared solution. Interpolation weights 0.25, 0.50, and 0.75 reach
+79.45%/79.17%, 78.17%/77.26%, and 76.31%/77.15% on WikiText/PG-19. The discrete hash
+codes do not form a useful linear path. Future selection must be performed away from
+the canonical held-out segments and return to domain-balanced discrete address and
+compressed-reranker training.
+
+The domain-balanced follow-up preserves that held-out discipline but does not clear
+the seed-0 gate. Group-DRO with beta 0.25 and a 0.3 deployed-overflow loss reduces the
+reserved per-corpus losses from 12.97/16.61 to 10.72/10.90. On the canonical segment,
+however, the frozen scorer reaches 80.66%/77.99% oracle-relative distant-mass recall.
+Refreshing the compressed scorer under the same Group-DRO rule changes this only to
+80.21%/78.16%.
+
+A separate whole-table mixing diagnostic selects among 24 declared masks using only
+reserved training-split segments. Its selected mask takes address tables 1-4 from the
+Group-DRO checkpoint and tables 0, 5, 6, and 7 from the original checkpoint. The
+reserved worst-corpus retained-top32/oracle-top32 score is 91.47%, versus 89.95% for
+the original endpoint, but canonical deployed recall after scorer refresh is only
+78.78%/78.42%. The selection improvement therefore does not transfer.
+
+The final simple domain-shift check trains on noncanonical WikiText-test and PG-19-
+validation segments 1-128, reserves segments 129-136 for training diagnostics, and
+leaves canonical segment 0 untouched. Its reserved loss falls from 13.04 to 10.81 and
+leaf overflow from 3.87 to 1.65, with nearly equal final corpus losses. Canonical
+evaluation nevertheless gives the following result:
+
+| Corpus | Actual distant mass | K=32 oracle | Oracle-relative | Eviction | Routing | Raw PPL |
+|---|---:|---:|---:|---:|---:|---:|
+| WikiText-2 test | 51.98% | 65.74% | **79.07%** | 21.75% | 802.2 us | 1.133x |
+| PG-19 validation | 50.15% | 61.99% | **80.91%** | 21.02% | 814.2 us | 1.133x |
+
+Both rows read 2,832 logical bytes/query. The experiment reverses the earlier corpus
+imbalance instead of producing a shared pass. This rejects simple corpus reweighting,
+reserved whole-table selection, and evaluation-domain adaptation as sufficient fixes.
+No output-recovery or seed-replication run is warranted for these checkpoints. A next
+implementation must train against the deployed discrete candidate set and final
+compressed ranking jointly, and must be selected without consulting canonical segment
+0. The 350-us runtime target remains unmet and deferred behind quality.
+
+The first materially different candidate-set objective is also a bounded negative.
+It uses the exact primary address plus six uncertainty-selected secondary probes in
+the straight-through forward path, estimates reservoir survival as `min(1, 32/load)`,
+and maximizes retained dense-teacher top-32 mass. Candidate queries are sampled at
+stride 16 to keep the 512-token run below the accepted memory envelope. With weight
+10 and Group-DRO beta 0.25, reserved candidate-set loss falls from 0.2744 to 0.1658;
+the run peaks at 1,771.0 MB.
+
+Canonical transfer is poor despite lower load. WikiText/PG-19 eviction improves to
+14.77%/11.25%, but address-candidate mass falls to 83.59%/83.76%, retained-top32
+ceilings reach only 82.62%/83.59% of the oracle, and deployed recall is
+74.87%/75.29%. Raw perplexity is 1.206x/1.133x, routing is 804.3/802.8 us/query, and
+traffic remains 2,832 bytes/query. This separates an optimized expected-survival
+surrogate from the exact causal shortlist it was intended to represent. The surrogate
+must not be weight-tuned against canonical segment 0 or replicated across seeds.
+
+The next implementation mines the exact causal retained set rather than expected
+survival. Masks are bit-packed on the host, materialized one example at a time, and
+remapped between two 1,000-step phases. For each query, teacher-top32 keys absent from
+the real retained pool are pulled toward their nearest complete adjacent-table path;
+low-mass keys that actually occupy the pool are pushed only on exact matched paths.
+
+Exact mining alone makes 99.46%/99.68% of distant mass addressable but collapses the
+index: WikiText/PG-19 eviction reaches 62.40%/56.05%, and deployed oracle-relative
+recall is only 76.15%/77.48%. This confirms that exact positive boundary pressure must
+be coupled to load control.
+
+Reusing the already-declared overflow weight 0.3 produces a better decomposition:
+
+| Corpus | Address mass | Retained-top32/oracle | Deployed/oracle | Eviction | Raw PPL | Routing |
+|---|---:|---:|---:|---:|---:|---:|
+| WikiText-2 test | 86.08% | 85.41% | **77.48%** | 14.97% | 1.169x | 797.1 us |
+| PG-19 validation | 87.73% | 86.94% | **78.14%** | 13.45% | 1.133x | 793.3 us |
+
+Both rows retain 2,832 bytes/query. The two phases are selected using freshly mined
+reserved objectives before the canonical check. Host-backed examples and boundary
+stride 8 keep the accepted run at 1,776.1 MB. Earlier combined attempts were
+interrupted before checkpoint save and are not evidence.
+
+Because the retained ceiling exceeds 85% on both corpora, one 16,000-step linear
+40-bit attention-scorer refresh is justified. Its reserved loss changes only
+4.3792 to 4.3764 and canonical recall becomes 77.47%/77.98%, with a 1,778.9 MB peak.
+This closes the exact-boundary branch on seed 0: neither seeds 1/2 nor output recovery
+is warranted, and the scorer refresh does not realize the available retained mass.
+
+The final bounded follow-up interleaves scorer and address updates on every training
+example, so exact causal membership and compressed ranking are optimized in one run
+rather than in sequential stages. Host-backed examples and bit-packed masks reduce
+the accepted peak from an interrupted 1,810.5 MB attempt to 1,196.6 MB. The
+interrupted attempt wrote no checkpoint and is not evidence.
+
+Without an explicit rank-swap term, the two-phase unified checkpoint reaches
+78.45%/79.49% oracle-relative recall on WikiText/PG-19. Adding the predeclared
+pairwise top-32 objective improves its reserved pairwise loss from 0.3561 to 0.3503,
+but the one-shot canonical result remains below the gate:
+
+| Corpus | Actual distant mass | K=32 oracle | Oracle-relative | Retained ceiling | Eviction | Raw PPL | Routing |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| WikiText-2 test | 51.61% | 65.74% | **78.51%** | 87.10% | 14.82% | 1.169x | 794.7 us |
+| PG-19 validation | 49.35% | 61.99% | **79.61%** | 88.47% | 13.33% | 1.098x | 793.0 us |
+
+Both rows read 2,832 logical bytes/query and the run peaks at 1,137.5 MB during
+canonical evaluation. Pairwise training improves the learned Hamming ceiling to
+87.45%/86.72% of the K=32 oracle, but it neither realizes the retained ceiling nor
+solves capacity loss. This closes the unified exact-membership/rank-swap branch on
+seed 0. Output recovery, seeds 1/2, latency work, and 1,024-token expansion remain
+gated; no third phase or canonical-weight tuning is supported.
+
+A final representation diagnostic replaces the fixed zero sign boundary with learned
+per-table query/key thresholds while freezing all 64 address projection directions.
+The thresholds are checkpointed, used by exact causal remapping, and consumed by the
+real evaluator without changing traffic. Two predeclared 1,000-step phases peak at
+1,194.4 MB and 1,165.7 MB. Phase 2 improves its freshly remined reserved address loss
+from 13.131 to 12.944 and overflow surrogate from 2.779 to 2.627.
+
+Canonical transfer is negative. WikiText/PG-19 oracle-relative recall is
+78.31%/78.37%, retained ceilings are 86.58%/87.15%, eviction is 14.45%/12.82%, raw
+PPL is 1.169x/1.133x, and routing is 818.1/816.5 us/query. Address-candidate mass
+falls to 87.47%/88.19%, so the small eviction improvement is purchased by worse
+addressability. Learned thresholds are therefore closed without a learning-rate,
+phase-count, or scalar-loss sweep. A materially different address representation,
+such as direct categorical byte assignment, is required next.
+
+Direct categorical byte assignment makes the failure sharper. Each table now emits
+one of 256 learned categories rather than composing a byte from eight correlated sign
+bits. Its initialization exactly reproduces the source binary code; top-six secondary
+probing, causal indexing, the 288-slot budget, and 2,832-byte accounting are retained.
+Two 1,000-step phases peak at 1,075.1 MB. After remapping the actual categorical
+leaves, reserved address loss falls from 10.334 to 10.074 and overflow from 0.081 to
+0.030.
+
+The canonical result exposes over-balancing rather than a viable router:
+
+| Corpus | Address mass | Retained/oracle | Deployed/oracle | Eviction | Raw PPL | Routing |
+|---|---:|---:|---:|---:|---:|---:|
+| WikiText-2 test | 34.94% | 49.23% | **47.71%** | 0.366% | 1.367x | 794.1 us |
+| PG-19 validation | 36.26% | 51.15% | **48.93%** | 0.708% | 1.206x | 781.8 us |
+
+The actual categorical index has p99 leaf occupancy 13/7 and maxima 39/48, versus
+the prior hot binary leaves, so direct categorical assignment successfully solves
+load while destroying attention-aligned colocation. A timing-path bug initially
+reported the old binary occupancy for this checkpoint; the report was overwritten
+after categorical query/index support was added to the timed lookup. The invalid
+occupancy/timing rows are not evidence.
+
+This closes unconstrained full-address categorical training without a temperature,
+learning-rate, balance-weight, or phase sweep. The next representation must preserve
+the binary primary partition and learn only a residual categorical secondary split
+within it. That isolates local load management from global semantic discovery.
+
+The primary-only diagnostic validates that premise. Without applying a secondary
+partition, the frozen binary primary buckets contain 99.09%/98.53% of distant
+attention mass on the canonical WikiText/PG-19 segments. Exact K=32 selection inside
+those primary pools recovers 99.42%/99.41% of the dense K=32 oracle. The global
+discovery ceiling is therefore sufficient; the remaining problem is how to subdivide
+and rank those large primary regions under the fixed read budget.
+
+`ResidualCategoricalSecondaryRouter` keeps those binary primary codes frozen and
+learns a separate 256-way secondary code per table. Initialization exactly reproduces
+the former adjacent binary byte. Training positives are restricted to primary-matched
+tables, hard negatives come from the same primary regions, and the loss controls only
+local leaf overflow rather than globally balancing all addresses. Two predeclared
+1,000-step phases peak at 1,075.1 MB. Phase 1 lowers reserved residual loss from
+3.670 to 2.459; phase 2 remaps the leaves and lowers its fresh reserved loss from
+2.517 to 2.444 and overflow from 0.428 to 0.386.
+
+The one-shot canonical result remains below gate:
+
+| Corpus | Primary K32/oracle | Secondary K32/oracle | Retained K32/oracle | Deployed/oracle | Eviction | Raw PPL | Routing |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| WikiText-2 test | 99.42% | 81.17% | 78.16% | **72.00%** | 1.880% | 1.169x | 765.8 us |
+| PG-19 validation | 99.41% | 82.36% | 79.64% | **73.04%** | 1.245% | 1.169x | 802.1 us |
+
+All rows read 2,832 logical bytes/query. Relative to unconstrained categorical
+training, preserving the primary partition restores much of the lost attention
+geometry and keeps eviction low. It still underperforms the original binary router's
+78.51%/79.61% deployed result: a single global secondary classifier cannot partition
+every primary region without losing useful keys, and its small candidate ceiling is
+then reduced further by retention and compressed reranking. Do not add a third phase,
+sweep the categorical temperature, run output recovery, or replicate seeds 1/2.
+
+A primary-conditioned follow-up tests whether sharing one secondary classifier across
+all primary regions caused that loss. It freezes both binary primary projections and
+the adjacent-byte secondary projections, then learns separate query/key categorical
+logit biases for each `(table, primary byte)` region. Zero initialization exactly
+reproduces the original adjacent-byte code, and the conditioned bias adds no index
+traffic. Checkpoint reload, causal correctness, and the timed conditioned index are
+covered by tests and an end-to-end smoke run.
+
+Two 1,000-step phases use the same remine rule. Phase 1 improves reserved address loss
+from 3.670 to 3.250. On fresh phase-2 leaves, loss improves 3.322 to 3.147 and overflow
+1.061 to 0.684. Training peaks at 1,079.1 MB. Canonical discovery is materially
+better than the shared residual classifier:
+
+| Corpus | Secondary K32/oracle | Retained K32/oracle | Deployed/oracle | Eviction | Raw PPL | Routing |
+|---|---:|---:|---:|---:|---:|---:|
+| WikiText-2 test | 89.12% | 84.37% | **76.54%** | 6.445% | 1.206x | 952.5 us |
+| PG-19 validation | 93.14% | 87.88% | **78.93%** | 6.812% | 1.133x | 951.2 us |
+
+One fixed-index 16,000-step linear scorer refresh is then selected by a marginal
+aggregate reserved-loss improvement, 4.70330 to 4.70285. Its accepted rerun uses a
+1,760 MB allocator limit and 8 MB cache and peaks at 1,764.7 MB. An initial 64 MB
+cache attempt reached 1,795.9 MB, was interrupted at step 6,000, and wrote no
+checkpoint; it is not evidence. The safe refresh changes deployed/oracle recall only
+to 76.72%/79.09%, with raw PPL 1.206x/1.133x.
+
+This closes primary-conditioned categorical biases as a seed-0 negative. They recover
+most secondary discovery, but the fixed per-leaf retention and 40-bit final scorer do
+not realize the 84-88% retained ceilings. The next branch must jointly improve
+capacity allocation and final scoring under the same 288-posting/2,832-byte budget;
+more categorical phases, bias learning-rate sweeps, another scorer refresh, output
+recovery, and seeds 1/2 are not supported.
